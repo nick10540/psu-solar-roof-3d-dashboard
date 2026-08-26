@@ -18,3 +18,16 @@ View your app in AI Studio: https://ai.studio/apps/1da6f7c8-5321-4d7d-a984-dfacd
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Run with Docker
+
+The dashboard is a fully client-side SPA (SolarEdge is called straight from
+the browser, building data lives in `localStorage`), so the container is
+just a static file server - no API keys or env vars needed at build or run
+time.
+
+```bash
+docker compose up -d --build
+```
+
+Then open http://localhost:3001. Stop it with `docker compose down`.

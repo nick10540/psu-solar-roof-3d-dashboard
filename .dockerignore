@@ -1,0 +1,13 @@
+node_modules
+dist
+build
+coverage
+.git
+.gitignore
+.claude
+*.log
+.env
+.env.*
+!.env.example
+Solar3DViewer.pre-optimization.tsx.bak
+*.md
