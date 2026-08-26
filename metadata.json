@@ -1,0 +1,6 @@
+{
+  "name": "MEA Solar Roof 3D Dashboard",
+  "description": "ระบบติดตามและแดชบอร์ดแสดงผลการผลิตไฟฟ้าพลังงานแสงอาทิตย์ MEA Solar Roof 5 ไซต์ พร้อมโหมด Google Earth 3D และการเชื่อมต่อ SolarEdge API",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

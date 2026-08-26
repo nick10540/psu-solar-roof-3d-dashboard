@@ -1,0 +1,669 @@
+/**
+ * Solar3DViewer.tsx
+ * Real Satellite Google Earth 3D Mode for MEA Solar Roof (5 Regional Sites)
+ * 
+ * Uses Real Satellite Imagery (Esri World Imagery / Photorealistic Satellite Tiles)
+ * with true 3D perspective, oblique tilt angle (pitch 60°), 3D orbit bearing,
+ * Google Earth blue 3D pins, and live floating telemetry cards.
+ * 
+ * Sites:
+ * 1. สุราษฎร์ธานี (Surat Thani) - 1,600 kWp
+ * 2. ภูเก็ต (Phuket) - 1,400 kWp
+ * 3. ตรัง (Trang) - 1,100 kWp
+ * 4. หาดใหญ่ (Hatyai) - 1,200 kWp
+ * 5. ปัตตานี (Pattani) - 700 kWp
+ */
+
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import * as maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { 
+  BuildingInfo, 
+  BuildingSiteBinding, 
+  SolarEdgeTransformedOverview 
+} from '../types';
+import {
+  Globe,
+  RotateCcw,
+  Camera,
+  Compass,
+  Satellite,
+  Layers,
+  Sliders,
+  Maximize2,
+  ZoomIn,
+  ZoomOut,
+  ArrowUp,
+  ArrowDown,
+  Navigation,
+  Sparkles,
+  MapPin
+} from 'lucide-react';
+
+interface Solar3DViewerProps {
+  buildings: BuildingInfo[];
+  selectedBuildingId: number | null;
+  bindings?: Record<number, BuildingSiteBinding>;
+  overviews?: Record<number, SolarEdgeTransformedOverview>;
+  onSelectBuilding: (building: BuildingInfo | null) => void;
+  onOpenDetailModal?: (building: BuildingInfo) => void;
+  onOpenBindingModal?: (building: BuildingInfo) => void;
+  onNavigateToSubpage?: (building: BuildingInfo) => void;
+  onOpenAddModal?: () => void;
+  onOpenDeleteDialog?: (building: BuildingInfo) => void;
+  timeOfDayHour?: number;
+  onTimeOfDayChange?: (hour: number) => void;
+}
+
+// Southern Thailand Regional Center (Center between Surat Thani, Phuket, Trang, Hatyai, Pattani)
+const REGIONAL_CENTER_LNG_LAT: [number, number] = [99.85, 7.95];
+const DEFAULT_ZOOM = 7.6;
+const DEFAULT_PITCH = 60; // 60° Oblique Google Earth Angle
+const DEFAULT_BEARING = -18; // Looking North-East across Southern Thailand Peninsula
+
+type SatelliteLayerStyle = 'esri-satellite' | 'hybrid' | 'dark';
+
+// Real Satellite Tile Sources (High-Resolution Photorealistic Satellite)
+const getMapStyle = (layerType: SatelliteLayerStyle): maplibregl.StyleSpecification => {
+  if (layerType === 'dark') {
+    return {
+      version: 8,
+      sources: {
+        'carto-dark': {
+          type: 'raster',
+          tiles: ['https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png'],
+          tileSize: 256,
+          attribution: '© CARTO, OpenStreetMap contributors',
+        },
+      },
+      layers: [
+        {
+          id: 'carto-dark-layer',
+          type: 'raster',
+          source: 'carto-dark',
+          paint: {
+            'raster-opacity': 1.0,
+          },
+        },
+      ],
+    };
+  }
+
+  if (layerType === 'hybrid') {
+    return {
+      version: 8,
+      sources: {
+        'esri-imagery': {
+          type: 'raster',
+          tiles: [
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          ],
+          tileSize: 256,
+          attribution: '© Esri, DigitalGlobe, GeoEye, Earthstar Geographics',
+          maxzoom: 19,
+        },
+        'osm-boundaries': {
+          type: 'raster',
+          tiles: [
+            'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+          ],
+          tileSize: 256,
+          maxzoom: 19,
+        },
+      },
+      layers: [
+        {
+          id: 'esri-imagery-layer',
+          type: 'raster',
+          source: 'esri-imagery',
+          paint: {
+            'raster-opacity': 1.0,
+          },
+        },
+        {
+          id: 'osm-boundaries-layer',
+          type: 'raster',
+          source: 'osm-boundaries',
+          paint: {
+            'raster-opacity': 0.7,
+          },
+        },
+      ],
+    };
+  }
+
+  // Default: Pure Photorealistic Satellite Imagery (No clutter labels, clean Earth satellite)
+  return {
+    version: 8,
+    sources: {
+      'esri-satellite': {
+        type: 'raster',
+        tiles: [
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        ],
+        tileSize: 256,
+        attribution: '© Esri World Imagery, Maxar, Earthstar Geographics',
+        maxzoom: 19,
+      },
+    },
+    layers: [
+      {
+        id: 'esri-satellite-layer',
+        type: 'raster',
+        source: 'esri-satellite',
+        paint: {
+          'raster-opacity': 1.0,
+        },
+      },
+    ],
+  };
+};
+
+export const Solar3DViewer: React.FC<Solar3DViewerProps> = ({
+  buildings,
+  selectedBuildingId,
+  bindings = {},
+  overviews = {},
+  onSelectBuilding,
+  onOpenDetailModal,
+  onOpenBindingModal,
+  onNavigateToSubpage,
+}) => {
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const markersRef = useRef<Map<number, maplibregl.Marker>>(new Map());
+  const orbitIntervalRef = useRef<number | null>(null);
+
+  // States
+  const [activeLayer, setActiveLayer] = useState<SatelliteLayerStyle>('esri-satellite');
+  const [showPinCards, setShowPinCards] = useState<boolean>(true);
+  const [isAutoOrbit, setIsAutoOrbit] = useState<boolean>(false);
+  const [currentPitch, setCurrentPitch] = useState<number>(DEFAULT_PITCH);
+  const [currentBearing, setCurrentBearing] = useState<number>(DEFAULT_BEARING);
+
+  // Initialize MapLibre GL Real 3D Satellite Map
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      style: getMapStyle('esri-satellite'),
+      center: REGIONAL_CENTER_LNG_LAT,
+      zoom: DEFAULT_ZOOM,
+      pitch: DEFAULT_PITCH,
+      bearing: DEFAULT_BEARING,
+      maxPitch: 85,
+      minPitch: 0,
+      minZoom: 5.5,
+      maxZoom: 18.5,
+      attributionControl: false,
+      dragRotate: true,
+      touchPitch: true,
+      pitchWithRotate: true,
+      renderWorldCopies: false,
+    });
+
+    // Custom attribution
+    map.addControl(
+      new maplibregl.AttributionControl({
+        compact: true,
+        customAttribution: 'MEA Solar Roof 5 Sites • Esri World Imagery 3D Real Satellite',
+      }),
+      'bottom-right'
+    );
+
+    // Track camera movement
+    map.on('rotate', () => {
+      setCurrentBearing(Math.round(map.getBearing()));
+    });
+
+    map.on('pitch', () => {
+      setCurrentPitch(Math.round(map.getPitch()));
+    });
+
+    // Click on empty map area to clear selection
+    map.on('click', (e) => {
+      // If click was not on a marker
+      const originalEvent = e.originalEvent;
+      if (originalEvent && (originalEvent.target as HTMLElement).closest('.maplibre-mea-marker')) {
+        return;
+      }
+      onSelectBuilding(null);
+    });
+
+    mapRef.current = map;
+
+    return () => {
+      if (orbitIntervalRef.current) {
+        clearInterval(orbitIntervalRef.current);
+      }
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [onSelectBuilding]);
+
+  // Handle Layer switching
+  const handleLayerChange = (layer: SatelliteLayerStyle) => {
+    if (!mapRef.current) return;
+    setActiveLayer(layer);
+    mapRef.current.setStyle(getMapStyle(layer));
+  };
+
+  // Reset to Google Earth 3D Perspective (60° tilt, -18° bearing, overview)
+  const handleResetGoogleEarthPerspective = () => {
+    if (!mapRef.current) return;
+    onSelectBuilding(null);
+    mapRef.current.flyTo({
+      center: REGIONAL_CENTER_LNG_LAT,
+      zoom: DEFAULT_ZOOM,
+      pitch: DEFAULT_PITCH,
+      bearing: DEFAULT_BEARING,
+      essential: true,
+      duration: 1800,
+    });
+  };
+
+  // Set Pitch Preset
+  const handleSetPitchPreset = (pitchVal: number) => {
+    if (!mapRef.current) return;
+    mapRef.current.easeTo({
+      pitch: pitchVal,
+      duration: 800,
+    });
+  };
+
+  // 3D Tilt Up / Tilt Down
+  const handleTilt = (delta: number) => {
+    if (!mapRef.current) return;
+    const nextPitch = Math.max(0, Math.min(85, mapRef.current.getPitch() + delta));
+    mapRef.current.easeTo({
+      pitch: nextPitch,
+      duration: 400,
+    });
+  };
+
+  // Auto 3D Orbit toggle
+  const handleToggleAutoOrbit = () => {
+    setIsAutoOrbit((prev) => !prev);
+  };
+
+  // Auto 3D Orbit loop
+  useEffect(() => {
+    if (isAutoOrbit) {
+      orbitIntervalRef.current = window.setInterval(() => {
+        if (!mapRef.current) return;
+        const b = mapRef.current.getBearing();
+        mapRef.current.setBearing((b + 0.35) % 360);
+      }, 50);
+    } else {
+      if (orbitIntervalRef.current) {
+        clearInterval(orbitIntervalRef.current);
+        orbitIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (orbitIntervalRef.current) {
+        clearInterval(orbitIntervalRef.current);
+      }
+    };
+  }, [isAutoOrbit]);
+
+  // Fly to site in 3D Real Satellite View
+  const handleFlyToSite3D = (site: BuildingInfo) => {
+    if (!mapRef.current) return;
+    onSelectBuilding(site);
+    mapRef.current.flyTo({
+      center: [site.lng, site.lat],
+      zoom: 14.5,
+      pitch: 62,
+      bearing: -25,
+      essential: true,
+      duration: 2000,
+    });
+  };
+
+  // Render 3D Google Earth Blue Pins with Live Telemetry Cards on the Map
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current;
+
+    // Clear old markers
+    markersRef.current.forEach((marker) => marker.remove());
+    markersRef.current.clear();
+
+    buildings.forEach((site) => {
+      const isSelected = selectedBuildingId === site.id;
+      const binding = bindings[site.id];
+      const overview = binding?.siteId ? overviews[binding.siteId] : null;
+
+      const currentPowerKw = overview ? overview.currentPowerKw : site.currentPowerKw;
+      const lifetimeEnergyKwh = overview ? overview.lifetimeEnergyKwh : site.lifetimeEnergyKwh;
+      const capacityKwp = site.capacityKwp;
+      const lifetimeVal = lifetimeEnergyKwh >= 10000 
+        ? (lifetimeEnergyKwh / 1000).toFixed(1) 
+        : Math.round(lifetimeEnergyKwh).toLocaleString();
+      const lifetimeUnit = lifetimeEnergyKwh >= 10000 ? 'MWh' : 'kWh';
+
+      // Marker container DOM Element
+      const el = document.createElement('div');
+      el.className = 'maplibre-mea-marker select-none';
+      el.style.width = '250px';
+      el.style.transform = 'translate(-50%, -100%)';
+      el.id = `maplibre-marker-site-${site.id}`;
+
+      el.innerHTML = `
+        <div class="relative flex flex-col items-center group transition-transform duration-300 ${
+          isSelected ? 'scale-105 z-50' : 'hover:scale-105 z-20'
+        }">
+          <!-- 1. Floating 3D Telemetry HUD Card -->
+          <div class="mb-1 transition-all duration-300 ${
+            showPinCards ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 pointer-events-none'
+          }" style="pointer-events: auto;">
+            <div class="glass-panel px-3 py-2.5 rounded-xl shadow-2xl border ${
+              isSelected 
+                ? 'border-amber-400/90 bg-slate-900/95 ring-2 ring-amber-400/50' 
+                : 'border-sky-400/60 bg-slate-950/90 hover:border-sky-300'
+            } text-white min-w-[230px] backdrop-blur-md cursor-pointer">
+              <!-- Header: Site Name & Code -->
+              <div class="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-slate-700/60">
+                <div class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full ${isSelected ? 'bg-amber-400' : 'bg-sky-400'} animate-ping"></span>
+                  <span class="font-bold text-xs tracking-wide text-amber-300 font-['Prompt',sans-serif]">${site.name}</span>
+                </div>
+                <span class="text-[9px] font-mono text-sky-300 bg-sky-950/90 px-1.5 py-0.5 rounded border border-sky-600/40 font-bold">${site.code}</span>
+              </div>
+
+              <!-- 3 Metrics Grid: กำลังผลิต (kW), พลังงานรวม (MWh/kWh), กำลังติดตั้ง (kWp) -->
+              <div class="grid grid-cols-3 gap-1.5 text-center text-slate-200 py-1">
+                <!-- Metric 1: กำลังผลิตปัจจุบัน -->
+                <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+                  <div class="text-[8.5px] text-slate-400 leading-none mb-1 font-medium">กำลังผลิต</div>
+                  <div class="font-bold font-mono text-[11px] text-amber-300 flex items-center justify-center gap-0.5 whitespace-nowrap">
+                    <span class="text-[9px] text-amber-400">⚡</span>
+                    <span>${currentPowerKw.toFixed(1)}</span>
+                    <span class="text-[8px] text-amber-400/80 font-normal ml-0.5">kW</span>
+                  </div>
+                </div>
+
+                <!-- Metric 2: พลังงานผลิตทั้งหมด -->
+                <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+                  <div class="text-[8.5px] text-slate-400 leading-none mb-1 font-medium">พลังงานรวม</div>
+                  <div class="font-bold font-mono text-[11px] text-emerald-300 flex items-center justify-center gap-0.5 whitespace-nowrap">
+                    <span>${lifetimeVal}</span>
+                    <span class="text-[8px] text-emerald-400/80 font-normal ml-0.5">${lifetimeUnit}</span>
+                  </div>
+                </div>
+
+                <!-- Metric 3: กำลังติดตั้งจริง -->
+                <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+                  <div class="text-[8.5px] text-slate-400 leading-none mb-1 font-medium">กำลังติดตั้ง</div>
+                  <div class="font-bold font-mono text-[11px] text-sky-300 flex items-center justify-center gap-0.5 whitespace-nowrap">
+                    <span>${capacityKwp.toFixed(0)}</span>
+                    <span class="text-[8px] text-sky-400/80 font-normal ml-0.5">kWp</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Action Link to Sub-page -->
+              <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[9.5px] text-slate-300">
+                <span class="text-sky-300 flex items-center gap-1 font-mono text-[9px]">
+                  <span class="w-1.5 h-1.5 rounded-full ${overview ? 'bg-emerald-400' : 'bg-sky-400'}"></span>
+                  ${overview ? 'SolarEdge Live' : 'SolarEdge Ready'}
+                </span>
+                <span class="text-amber-300 font-bold flex items-center gap-0.5 hover:underline text-[10px]">
+                  ดูหน้าย่อยไซต์ ➔
+                </span>
+              </div>
+            </div>
+            <!-- Card Arrow -->
+            <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-sky-400/80 mx-auto -mt-[1px]"></div>
+          </div>
+
+          <!-- 2. Google Earth Style 3D Blue Pin -->
+          <div class="relative flex flex-col items-center cursor-pointer">
+            <!-- Pin Head -->
+            <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-sky-700 via-blue-500 to-cyan-300 border-2 border-white shadow-[0_0_15px_rgba(14,165,233,0.9)] flex items-center justify-center text-white text-xs font-bold font-mono">
+              <span>${site.id}</span>
+            </div>
+            <!-- Vertical Metallic Pin Stem -->
+            <div class="w-1 h-4 bg-gradient-to-b from-blue-300 via-sky-500 to-sky-700 shadow-sm"></div>
+            <!-- Ground Ripple Ring Base -->
+            <div class="w-4 h-2 rounded-full bg-sky-400/80 blur-[1px] animate-pulse"></div>
+          </div>
+        </div>
+      `;
+
+      // Click event
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onSelectBuilding(site);
+        if (onNavigateToSubpage) {
+          onNavigateToSubpage(site);
+        }
+      });
+
+      const marker = new maplibregl.Marker({
+        element: el,
+        anchor: 'bottom',
+      })
+        .setLngLat([site.lng, site.lat])
+        .addTo(map);
+
+      markersRef.current.set(site.id, marker);
+    });
+  }, [buildings, selectedBuildingId, bindings, overviews, showPinCards, onSelectBuilding, onNavigateToSubpage]);
+
+  return (
+    <div className="relative w-full h-full min-h-[380px] bg-slate-950 overflow-hidden font-['Prompt',sans-serif] select-none">
+      {/* 1. MapLibre GL 3D Map Container */}
+      <div ref={mapContainerRef} className="w-full h-full z-10" />
+
+      {/* 2. Top-Left: Google Earth 3D Mode Badge & Layer Controls */}
+      <div className="absolute top-3 left-3 z-20 flex flex-col gap-2 pointer-events-auto">
+        {/* Mode Header Pill */}
+        <div className="glass-panel px-3 py-1.5 rounded-xl border border-sky-500/30 shadow-2xl flex items-center gap-2 text-xs backdrop-blur-md">
+          <Globe className="w-4 h-4 text-cyan-300 animate-spin-slow" />
+          <span className="font-bold text-white">Google Earth 3D (ภาพถ่ายดาวเทียมจริง)</span>
+          <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.2 rounded border border-cyan-400/40 font-mono font-bold">
+            Real 3D
+          </span>
+        </div>
+
+        {/* Real Satellite Layer Selector */}
+        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 shadow-2xl border border-sky-500/30 text-xs backdrop-blur-md">
+          <button
+            onClick={() => handleLayerChange('esri-satellite')}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              activeLayer === 'esri-satellite'
+                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+            }`}
+            title="ภาพถ่ายดาวเทียมจริงความละเอียดสูง (Esri World Imagery Real Satellite)"
+          >
+            <Satellite className="w-3.5 h-3.5 text-sky-400" />
+            <span className="text-[11px]">ดาวเทียมจริง</span>
+          </button>
+
+          <button
+            onClick={() => handleLayerChange('hybrid')}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              activeLayer === 'hybrid'
+                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+            }`}
+            title="ดาวเทียมจริง + เส้นขอบเขตภูมิประเทศ (Hybrid)"
+          >
+            <Layers className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="text-[11px]">Hybrid</span>
+          </button>
+
+          <button
+            onClick={() => handleLayerChange('dark')}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              activeLayer === 'dark'
+                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+            }`}
+            title="แผนที่ Dark Cyber 3D"
+          >
+            <span className="text-xs">🌑</span>
+            <span className="text-[11px]">Dark 3D</span>
+          </button>
+        </div>
+
+        {/* Pin Telemetry Cards Toggle */}
+        <button
+          onClick={() => setShowPinCards(!showPinCards)}
+          className={`glass-panel px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 border transition-all cursor-pointer shadow-lg backdrop-blur-md ${
+            showPinCards
+              ? 'bg-sky-950/70 border-sky-400/50 text-sky-200'
+              : 'bg-slate-900/80 border-slate-700 text-slate-400'
+          }`}
+        >
+          <Sliders className="w-3.5 h-3.5 text-sky-400" />
+          <span className="text-[11px] font-medium">
+            {showPinCards ? 'แสดงการ์ดบนหมุด 3D (เปิด)' : 'ซ่อนการ์ดบนหมุด'}
+          </span>
+        </button>
+      </div>
+
+      {/* 3. Top-Right: 3D Camera Angles, Tilt Presets & Auto Orbit */}
+      <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2 pointer-events-auto">
+        {/* Row 1: Google Earth Preset & Auto Orbit */}
+        <div className="flex items-center gap-1.5">
+          {/* Reset Google Earth 60° Oblique Perspective */}
+          <button
+            onClick={handleResetGoogleEarthPerspective}
+            className="glass-panel px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 border border-sky-500/30 hover:bg-sky-900/50 text-sky-200 transition-all cursor-pointer shadow-xl backdrop-blur-md"
+            title="รีเซ็ตมุมมอง Google Earth 3D (เฉียง 60 องศา)"
+          >
+            <Camera className="w-3.5 h-3.5 text-sky-400" />
+            <span className="text-[11px] font-medium hidden sm:inline">มุมมองเฉียง 3D (Google Earth)</span>
+            <span className="text-[11px] font-medium sm:hidden">3D เฉียง</span>
+          </button>
+
+          {/* Auto Orbit 3D */}
+          <button
+            onClick={handleToggleAutoOrbit}
+            className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xl backdrop-blur-md ${
+              isAutoOrbit
+                ? 'bg-amber-500/20 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.4)]'
+                : 'glass-panel border-sky-500/30 text-slate-300 hover:text-sky-300'
+            }`}
+            title="หมุนมุมมองรอบแผนที่ 3D อัตโนมัติ"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isAutoOrbit ? 'animate-spin' : ''}`} />
+            <span className="text-[11px] font-medium hidden md:inline">
+              {isAutoOrbit ? 'กำลังหมุน 3D' : 'หมุน 3D อัตโนมัติ'}
+            </span>
+          </button>
+        </div>
+
+        {/* Row 2: 3D Tilt Angle Presets (0°, 45°, 60°, 75°) */}
+        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 border border-sky-500/30 shadow-xl backdrop-blur-md text-xs">
+          <span className="text-[10px] text-slate-400 px-1 font-mono hidden sm:inline">มุมเอียง:</span>
+          
+          <button
+            onClick={() => handleSetPitchPreset(60)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              Math.abs(currentPitch - 60) <= 3
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองเฉียง 60 องศา (Google Earth Perspective)"
+          >
+            60° เฉียง
+          </button>
+
+          <button
+            onClick={() => handleSetPitchPreset(75)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              Math.abs(currentPitch - 75) <= 3
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองพาโนรามาเส้นขอบฟ้า 75 องศา"
+          >
+            75° ขอบฟ้า
+          </button>
+
+          <button
+            onClick={() => handleSetPitchPreset(45)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              Math.abs(currentPitch - 45) <= 3
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองเฉียง 45 องศา (Isometric 3D)"
+          >
+            45°
+          </button>
+
+          <button
+            onClick={() => handleSetPitchPreset(0)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              currentPitch <= 5
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองแนวระนาบ 2D จากด้านบน"
+          >
+            0° แนวราบ
+          </button>
+        </div>
+
+        {/* Row 3: 3D Camera Interactive Controls (Tilt Up/Down & Zoom) */}
+        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 border border-sky-500/30 shadow-xl backdrop-blur-md">
+          {/* Tilt Up */}
+          <button
+            onClick={() => handleTilt(10)}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
+            title="เพิ่มมุมเฉียง 3D (Tilt Up)"
+          >
+            <ArrowUp className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Tilt Down */}
+          <button
+            onClick={() => handleTilt(-10)}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
+            title="ลดมุมเฉียง 3D (Tilt Down)"
+          >
+            <ArrowDown className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
+
+          {/* Zoom In */}
+          <button
+            onClick={() => mapRef.current?.zoomIn()}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
+            title="ขยายแผนที่ (Zoom In)"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Zoom Out */}
+          <button
+            onClick={() => mapRef.current?.zoomOut()}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
+            title="ย่อแผนที่ (Zoom Out)"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* 4. Bottom-Left: Google Earth 3D Interaction Guide */}
+      <div className="absolute bottom-3 left-3 z-20 pointer-events-none hidden md:flex items-center gap-2">
+        <div className="glass-panel px-3 py-1.5 rounded-xl text-[10px] text-slate-300 border border-sky-500/20 shadow-xl flex items-center gap-2 backdrop-blur-md">
+          <Compass className="w-3.5 h-3.5 text-sky-400" />
+          <span>
+            <strong>ภาพถ่ายดาวเทียมจริง 3D</strong> • คลิกขวาลาก / กด Ctrl+ลาก: ปรับมุมเฉียงและหมุน 360° • คลิกซ้ายลาก: เลื่อนแผนที่ • หมุนลูกกลิ้ง: ซูมเข้า/ออก
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};

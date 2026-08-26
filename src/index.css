@@ -1,0 +1,258 @@
+@import "tailwindcss";
+/* CSS @import is only valid before any rule set - it was previously buried
+   halfway down this file, where the bundler is free to drop it. */
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: #030712;
+    color: #f8fafc;
+    font-family: 'Prompt', 'Bai Jamjuree', sans-serif;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Page brightness (see src/hooks/useScreenBrightness.ts)
+ *
+ * Applied to <html> so that `position: fixed` modals still resolve against the
+ * viewport - any element carrying a `filter` becomes the containing block for
+ * its fixed descendants.
+ *
+ * The class is only present when brightness is not 100%. A filter puts the
+ * whole page through an extra full-screen compositing pass on every frame the
+ * map moves, so at the default setting we deliberately pay nothing.
+ * ------------------------------------------------------------------------ */
+html.brightness-adjusted {
+  filter: brightness(var(--app-brightness, 1));
+}
+
+/* Glassmorphism Classes (Enhanced High Contrast & Dark Depth) */
+.glass-panel {
+  background: rgba(11, 18, 33, 0.94);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  box-shadow: 0 12px 36px -4px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.glass-panel-glow {
+  background: rgba(11, 18, 33, 0.97);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  box-shadow: 0 16px 48px 0 rgba(0, 0, 0, 0.85), 0 0 24px 0 rgba(56, 189, 248, 0.22);
+}
+
+.glass-card-subtle {
+  background: rgba(17, 26, 46, 0.92);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Leaflet Overrides */
+.leaflet-container {
+  width: 100% !important;
+  height: 100% !important;
+  background: #030712 !important;
+  font-family: 'Prompt', sans-serif !important;
+  z-index: 0 !important;
+}
+
+/* MapLibre GL 3D Map Overrides */
+.maplibregl-map {
+  font-family: 'Prompt', sans-serif !important;
+  width: 100% !important;
+  height: 100% !important;
+  background-color: #020817 !important;
+}
+
+.maplibregl-canvas {
+  outline: none;
+}
+
+.maplibregl-ctrl-attrib {
+  background: rgba(15, 23, 42, 0.75) !important;
+  color: #94a3b8 !important;
+  font-size: 10px !important;
+  backdrop-filter: blur(8px) !important;
+  border-top-left-radius: 8px !important;
+  padding: 3px 8px !important;
+}
+
+.maplibregl-ctrl-attrib a {
+  color: #38bdf8 !important;
+  text-decoration: none;
+}
+
+.maplibre-mea-marker {
+  cursor: pointer;
+  z-index: 10;
+  transform-origin: bottom center;
+  /* MapLibre rewrites this element's transform on every frame of a pan or
+     rotate. Promoting it to its own compositor layer keeps that work off the
+     main thread instead of repainting the card on each frame. */
+  will-change: transform;
+}
+
+.maplibre-mea-marker:hover {
+  z-index: 50;
+}
+
+/* ---------------------------------------------------------------------------
+ * Map marker performance
+ *
+ * The pin cards float directly above a live WebGL canvas. `backdrop-filter`
+ * there forces the compositor to re-rasterise a blurred copy of the map on
+ * every single frame, which on a 4K 72" panel is the dominant cost of a pan
+ * or rotate. These cards are already 90-95% opaque, so the blur contributes
+ * almost nothing visually. `.glass-panel-static` keeps the look without it.
+ * ------------------------------------------------------------------------ */
+.glass-panel-static {
+  background: rgba(11, 18, 33, 0.94);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  box-shadow: 0 12px 36px -4px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+/* A pin with no data behind it: desaturate and dim so it is obvious at a glance
+   which sites are actually reporting. The name and code stay legible. */
+.mea-marker-nodata {
+  opacity: 0.72;
+  filter: saturate(0.35);
+}
+
+/* Cheap opacity-only pulses. The Tailwind `animate-ping` variants animate
+   transform + opacity on 5 always-visible nodes forever; opacity alone stays
+   on the compositor thread. */
+@keyframes meaLiveDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.mea-live-dot {
+  animation: meaLiveDot 2s ease-in-out infinite;
+}
+
+.mea-ground-ring {
+  animation: meaLiveDot 2.6s ease-in-out infinite;
+  filter: blur(1px);
+}
+
+/* While the camera is moving, strip every non-essential effect. Applied and
+   removed by Solar3DViewer on movestart/moveend. This is what turns a stuttery
+   drag into a smooth one. */
+.map-interacting .maplibre-mea-marker * {
+  animation: none !important;
+  transition: none !important;
+}
+
+.map-interacting .glass-panel-static {
+  box-shadow: none !important;
+}
+
+.map-interacting .mea-ground-ring {
+  filter: none !important;
+}
+
+/* Respect the OS setting; also a useful kill switch for the venue machine. */
+@media (prefers-reduced-motion: reduce) {
+  .mea-live-dot,
+  .mea-ground-ring {
+    animation: none !important;
+  }
+}
+
+.leaflet-control-attribution {
+  background: rgba(15, 23, 42, 0.6) !important;
+  color: #94a3b8 !important;
+  font-size: 9px !important;
+  backdrop-filter: blur(4px) !important;
+  border-top-left-radius: 8px !important;
+  padding: 2px 6px !important;
+}
+
+.leaflet-control-attribution a {
+  color: #38bdf8 !important;
+}
+
+.psu-solar-pin-wrapper {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Custom Scrollbar for sidebars & tables */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.3);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.35);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.6);
+}
+
+/* Animations */
+@keyframes pulseSlow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.02);
+  }
+}
+
+.animate-pulse-slow {
+  animation: pulseSlow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slideUp {
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

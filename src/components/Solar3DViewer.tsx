@@ -1,0 +1,993 @@
+/**
+ * Solar3DViewer.tsx
+ * Real Satellite Google Earth 3D Mode for MEA Solar Roof (5 Regional Sites)
+ *
+ * Rewritten for unattended all-day operation on a 72" TV.
+ *
+ * Stability contract - read before editing:
+ *   1. The MapLibre instance is created EXACTLY ONCE per mount. The init effect
+ *      must never depend on a prop that changes identity between renders;
+ *      callbacks are reached through `handlersRef` instead. A single unstable
+ *      dependency here destroys and rebuilds the whole map (and its WebGL
+ *      context and tile cache) on every parent render.
+ *   2. Basemap switching toggles layer visibility. setStyle() is never called,
+ *      so already-downloaded tiles survive a switch.
+ *   3. Markers are created once per building id and then PATCHED in place.
+ *      They are never torn down and re-created on a data tick.
+ *   4. Every timer, rAF, DOM listener and map listener registered here is
+ *      released in the matching cleanup.
+ *
+ * Sites:
+ * 1. สุราษฎร์ธานี (Surat Thani) - 320 kWp
+ * 2. ภูเก็ต (Phuket) - 450 kWp
+ * 3. ตรัง (Trang) - 250 kWp
+ * 4. หาดใหญ่ (Hatyai) - 380 kWp
+ * 5. ปัตตานี (Pattani) - 200 kWp
+ */
+
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import * as maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { BuildingInfo } from '../types';
+import { RegionalTotalsPanel } from './RegionalTotalsPanel';
+import { ResolvedSiteMetrics, RegionalTotals } from '../services/siteMetricsService';
+import {
+  buildUnifiedMapStyle,
+  LAYER_VISIBILITY,
+  SatelliteLayerStyle,
+  REGIONAL_CENTER,
+  MAP_MAX_BOUNDS,
+  DEFAULT_ZOOM,
+  MIN_ZOOM,
+  MAX_ZOOM,
+  DEFAULT_PITCH,
+  MAX_PITCH,
+  DEFAULT_BEARING,
+  ORBIT_DEG_PER_SEC,
+  CAMERA_BADGE_THROTTLE_MS,
+} from '../config/mapConfig';
+import { MARKER_FONT_SIZES } from '../config/markerTypography';
+import {
+  RotateCcw,
+  Camera,
+  Compass,
+  Satellite,
+  Layers,
+  Sliders,
+  ZoomIn,
+  ZoomOut,
+  ArrowUp,
+  ArrowDown,
+  AlertTriangle,
+  MapPinPlus,
+  Trash2,
+} from 'lucide-react';
+
+interface Solar3DViewerProps {
+  buildings: BuildingInfo[];
+  selectedBuildingId: number | null;
+  /** Per-pin resolved figures. Already encodes what each site may display. */
+  siteMetrics: ResolvedSiteMetrics[];
+  /** Aggregated totals, shown in the bottom-right summary panel. */
+  totals: RegionalTotals;
+  onSelectBuilding: (building: BuildingInfo | null) => void;
+  onOpenDetailModal?: (building: BuildingInfo) => void;
+  onOpenBindingModal?: (building: BuildingInfo) => void;
+  onNavigateToSubpage?: (building: BuildingInfo) => void;
+  onOpenAddModal?: () => void;
+  onOpenDeleteDialog?: (building: BuildingInfo) => void;
+  timeOfDayHour?: number;
+  onTimeOfDayChange?: (hour: number) => void;
+}
+
+/** Live handles into a marker's DOM so values can be patched without re-rendering it. */
+interface MarkerHandle {
+  marker: maplibregl.Marker;
+  root: HTMLDivElement;
+  inner: HTMLElement;
+  cardWrap: HTMLElement;
+  card: HTMLElement;
+  headerDot: HTMLElement;
+  nameEl: HTMLElement;
+  codeEl: HTMLElement;
+  powerEl: HTMLElement;
+  energyValEl: HTMLElement;
+  energyUnitEl: HTMLElement;
+  capacityEl: HTMLElement;
+  statusDot: HTMLElement;
+  statusText: HTMLElement;
+  pinIdEl: HTMLElement;
+  lng: number;
+  lat: number;
+  onClick: (e: MouseEvent) => void;
+}
+
+const CARD_BASE =
+  'glass-panel-static px-3 py-2.5 rounded-xl shadow-2xl border text-white min-w-[230px] cursor-pointer transition-colors duration-200';
+const CARD_SELECTED = 'border-amber-400/90 bg-slate-900/95 ring-2 ring-amber-400/50';
+const CARD_IDLE = 'border-sky-400/60 bg-slate-950/90 hover:border-sky-300';
+
+/** Rendered wherever a metric is `null`. */
+const NO_DATA = '—';
+
+/** Defensive placeholder if a pin somehow has no resolved entry. */
+function emptySiteMetrics(buildingId: number): ResolvedSiteMetrics {
+  return {
+    buildingId,
+    siteId: null,
+    isBound: false,
+    hasData: false,
+    source: 'none',
+    currentPowerKw: null,
+    todayEnergyKwh: null,
+    lifetimeEnergyKwh: null,
+    capacityKwp: null,
+    lastUpdateTime: null,
+  };
+}
+
+function formatLifetime(kwh: number): { value: string; unit: string } {
+  return kwh >= 10000
+    ? { value: (kwh / 1000).toFixed(1), unit: 'MWh' }
+    : { value: Math.round(kwh).toLocaleString(), unit: 'kWh' };
+}
+
+/**
+ * Builds the marker DOM once. `data-mea` attributes mark the nodes that later
+ * get patched, so the expensive innerHTML parse happens a single time per site.
+ */
+function createMarkerElement(site: BuildingInfo): {
+  el: HTMLDivElement;
+  refs: Omit<MarkerHandle, 'marker' | 'lng' | 'lat' | 'onClick' | 'root'>;
+} {
+  const el = document.createElement('div');
+  el.className = 'maplibre-mea-marker select-none';
+  el.style.width = '250px';
+  el.style.transform = 'translate(-50%, -100%)';
+  el.id = `maplibre-marker-site-${site.id}`;
+
+  el.innerHTML = `
+    <div data-mea="inner" class="relative flex flex-col items-center group">
+      <!-- 1. Floating 3D Telemetry HUD Card -->
+      <div data-mea="cardWrap" class="mb-1" style="pointer-events: auto;">
+        <div data-mea="card" class="${CARD_BASE} ${CARD_IDLE}">
+          <!-- Header: Site Name & Code -->
+          <div class="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-slate-700/60">
+            <div class="flex items-center gap-1.5">
+              <span data-mea="headerDot" class="w-2 h-2 rounded-full bg-sky-400 mea-live-dot"></span>
+              <span data-mea="name" class="font-bold tracking-wide text-amber-300 font-['Prompt',sans-serif]" style="font-size:${MARKER_FONT_SIZES.title}px"></span>
+            </div>
+            <span data-mea="code" class="hidden font-mono text-sky-300 bg-sky-950/90 px-1.5 py-0.5 rounded border border-sky-600/40 font-bold" style="font-size:${MARKER_FONT_SIZES.code}px"></span>
+          </div>
+
+          <!-- 3 Metrics Grid -->
+          <div class="grid grid-cols-3 gap-1.5 text-center text-slate-200 py-1">
+            <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+              <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังผลิต</div>
+              <div class="font-bold font-mono text-amber-300 flex items-center justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                <span class="text-amber-400" style="font-size:${MARKER_FONT_SIZES.metricIcon}px">⚡</span>
+                <span data-mea="power">0.0</span>
+                <span class="text-amber-400/80 font-normal ml-0.5" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kW</span>
+              </div>
+            </div>
+
+            <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+              <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">พลังงานรวม</div>
+              <div class="font-bold font-mono text-emerald-300 flex items-center justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                <span data-mea="energyVal">0</span>
+                <span data-mea="energyUnit" class="text-emerald-400/80 font-normal ml-0.5" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWh</span>
+              </div>
+            </div>
+
+            <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+              <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังติดตั้ง</div>
+              <div class="font-bold font-mono text-sky-300 flex items-center justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                <span data-mea="capacity">0</span>
+                <span class="text-sky-400/80 font-normal ml-0.5" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWp</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Link to Sub-page -->
+          <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-slate-300" style="font-size:${MARKER_FONT_SIZES.statusRow}px">
+            <span class="text-sky-300 flex items-center gap-1 font-mono" style="font-size:${MARKER_FONT_SIZES.statusText}px">
+              <span data-mea="statusDot" class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+              <span data-mea="statusText">SolarEdge Ready</span>
+            </span>
+            <span class="text-amber-300 font-bold flex items-center gap-0.5 hover:underline" style="font-size:${MARKER_FONT_SIZES.actionLink}px">
+              ดูหน้าย่อยไซต์ ➔
+            </span>
+          </div>
+        </div>
+        <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-sky-400/80 mx-auto -mt-[1px]"></div>
+      </div>
+
+      <!-- 2. Google Earth Style 3D Blue Pin -->
+      <div class="relative flex flex-col items-center cursor-pointer">
+        <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-sky-700 via-blue-500 to-cyan-300 border-2 border-white shadow-[0_0_15px_rgba(14,165,233,0.9)] flex items-center justify-center text-white font-bold font-mono" style="font-size:${MARKER_FONT_SIZES.pinNumber}px">
+          <span data-mea="pinId"></span>
+        </div>
+        <div class="w-1 h-4 bg-gradient-to-b from-blue-300 via-sky-500 to-sky-700 shadow-sm"></div>
+        <div class="w-4 h-2 rounded-full bg-sky-400/80 mea-ground-ring"></div>
+      </div>
+    </div>
+  `;
+
+  const pick = (key: string): HTMLElement =>
+    el.querySelector<HTMLElement>(`[data-mea="${key}"]`) as HTMLElement;
+
+  return {
+    el,
+    refs: {
+      inner: pick('inner'),
+      cardWrap: pick('cardWrap'),
+      card: pick('card'),
+      headerDot: pick('headerDot'),
+      nameEl: pick('name'),
+      codeEl: pick('code'),
+      powerEl: pick('power'),
+      energyValEl: pick('energyVal'),
+      energyUnitEl: pick('energyUnit'),
+      capacityEl: pick('capacity'),
+      statusDot: pick('statusDot'),
+      statusText: pick('statusText'),
+      pinIdEl: pick('pinId'),
+    },
+  };
+}
+
+/**
+ * Writes current values into an existing marker. Text nodes only - no re-parse,
+ * no layout storm.
+ *
+ * `metrics` already encodes what this pin is permitted to show; a `null` field
+ * means "no data" and is rendered as an em-dash. The marker never reaches for a
+ * fallback of its own - that habit is what let seeded demo numbers appear while
+ * the dashboard was claiming to be on the live API.
+ */
+function patchMarker(
+  handle: MarkerHandle,
+  site: BuildingInfo,
+  isSelected: boolean,
+  showCards: boolean,
+  metrics: ResolvedSiteMetrics
+): void {
+  const hasData = metrics.hasData;
+  const lifetime =
+    metrics.lifetimeEnergyKwh === null
+      ? { value: NO_DATA, unit: '' }
+      : formatLifetime(metrics.lifetimeEnergyKwh);
+
+  const nextName = site.name;
+  if (handle.nameEl.textContent !== nextName) handle.nameEl.textContent = nextName;
+  if (handle.codeEl.textContent !== site.code) handle.codeEl.textContent = site.code;
+
+  const pinId = String(site.id);
+  if (handle.pinIdEl.textContent !== pinId) handle.pinIdEl.textContent = pinId;
+
+  const nextPower =
+    metrics.currentPowerKw === null ? NO_DATA : metrics.currentPowerKw.toFixed(1);
+  if (handle.powerEl.textContent !== nextPower) handle.powerEl.textContent = nextPower;
+
+  if (handle.energyValEl.textContent !== lifetime.value) handle.energyValEl.textContent = lifetime.value;
+  if (handle.energyUnitEl.textContent !== lifetime.unit) handle.energyUnitEl.textContent = lifetime.unit;
+
+  const nextCapacity =
+    metrics.capacityKwp === null ? NO_DATA : metrics.capacityKwp.toFixed(0);
+  if (handle.capacityEl.textContent !== nextCapacity) handle.capacityEl.textContent = nextCapacity;
+
+
+  // The no-data modifier has to be part of this string: the card's className is
+  // assigned wholesale below, so anything added via classList would be wiped.
+  const nextCard = [
+    CARD_BASE,
+    isSelected ? CARD_SELECTED : CARD_IDLE,
+    hasData ? '' : 'mea-marker-nodata',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  if (handle.card.className !== nextCard) handle.card.className = nextCard;
+
+  const nextInner = `relative flex flex-col items-center group transition-transform duration-300 ${
+    isSelected ? 'scale-105 z-50' : 'hover:scale-105 z-20'
+  }`;
+  if (handle.inner.className !== nextInner) handle.inner.className = nextInner;
+
+  const nextWrap = `mb-1 transition-opacity duration-300 ${
+    showCards ? 'opacity-100' : 'opacity-0 pointer-events-none'
+  }`;
+  if (handle.cardWrap.className !== nextWrap) handle.cardWrap.className = nextWrap;
+
+  const nextHeaderDot = `w-2 h-2 rounded-full mea-live-dot ${isSelected ? 'bg-amber-400' : 'bg-sky-400'}`;
+  if (handle.headerDot.className !== nextHeaderDot) handle.headerDot.className = nextHeaderDot;
+
+  // Status line states exactly where the numbers came from.
+  const statusTone =
+    metrics.source === 'live'
+      ? 'bg-emerald-400'
+      : metrics.source === 'mock'
+        ? 'bg-amber-400'
+        : 'bg-slate-600';
+  const nextStatusDot = `w-1.5 h-1.5 rounded-full ${statusTone}`;
+  if (handle.statusDot.className !== nextStatusDot) handle.statusDot.className = nextStatusDot;
+
+  const nextStatusText =
+    metrics.source === 'live'
+      ? 'SolarEdge Live'
+      : metrics.source === 'mock'
+        ? 'Mock Simulator'
+        : metrics.isBound
+          ? 'ไม่มีข้อมูลจาก API'
+          : 'ยังไม่ได้ผูก API';
+  if (handle.statusText.textContent !== nextStatusText) handle.statusText.textContent = nextStatusText;
+
+  if (handle.lng !== site.lng || handle.lat !== site.lat) {
+    handle.marker.setLngLat([site.lng, site.lat]);
+    handle.lng = site.lng;
+    handle.lat = site.lat;
+  }
+}
+
+const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
+  buildings,
+  selectedBuildingId,
+  siteMetrics,
+  totals,
+  onSelectBuilding,
+  onNavigateToSubpage,
+  onOpenAddModal,
+  onOpenDeleteDialog,
+}) => {
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const markersRef = useRef<Map<number, MarkerHandle>>(new Map());
+
+  const orbitRafRef = useRef<number | null>(null);
+  const cameraRafRef = useRef<number | null>(null);
+  const lastBadgeSyncRef = useRef<number>(0);
+  const isMovingRef = useRef<boolean>(false);
+  const errorLogCountRef = useRef<number>(0);
+
+  /**
+   * Latest-callback box. Prop identities change on every parent render; reading
+   * them through a ref keeps the init effect's dependency list empty.
+   */
+  const handlersRef = useRef({ onSelectBuilding, onNavigateToSubpage, onOpenAddModal, onOpenDeleteDialog });
+  useEffect(() => {
+    handlersRef.current = { onSelectBuilding, onNavigateToSubpage, onOpenAddModal, onOpenDeleteDialog };
+  }, [onSelectBuilding, onNavigateToSubpage, onOpenAddModal, onOpenDeleteDialog]);
+
+  // States
+  const [activeLayer, setActiveLayer] = useState<SatelliteLayerStyle>('esri-satellite');
+  const [showPinCards, setShowPinCards] = useState<boolean>(true);
+  const [isAutoOrbit, setIsAutoOrbit] = useState<boolean>(false);
+  const [camera, setCamera] = useState<{ pitch: number; bearing: number }>({
+    pitch: DEFAULT_PITCH,
+    bearing: DEFAULT_BEARING,
+  });
+  /** True as soon as the Map object exists. Markers only need this. */
+  const [isMapCreated, setIsMapCreated] = useState<boolean>(false);
+  /** True after the style has loaded. Only layer operations need this. */
+  const [isStyleReady, setIsStyleReady] = useState<boolean>(false);
+  const [glLost, setGlLost] = useState<boolean>(false);
+  /** Bumping this rebuilds the map - the recovery path after an unrecoverable WebGL loss. */
+  const [remountKey, setRemountKey] = useState<number>(0);
+
+  // -------------------------------------------------------------------------
+  // Map lifecycle - runs once per remountKey and NEVER on a data tick
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const container = mapContainerRef.current;
+    if (!container) return;
+
+    const map = new maplibregl.Map({
+      container,
+      style: buildUnifiedMapStyle(),
+      center: REGIONAL_CENTER,
+      zoom: DEFAULT_ZOOM,
+      pitch: DEFAULT_PITCH,
+      bearing: DEFAULT_BEARING,
+
+      // --- Tile-request envelope: Southern Thailand only ---
+      maxBounds: MAP_MAX_BOUNDS,
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
+      minPitch: 0,
+      maxPitch: MAX_PITCH,
+      renderWorldCopies: false,
+
+      // --- Request-volume controls (the "hundreds of requests" fix) ---
+      // Do not re-download tiles when their HTTP cache entry expires. Satellite
+      // imagery is static for the length of an event; revalidation is pure noise.
+      refreshExpiredTiles: false,
+      // Hold far more tiles in memory than the default so pan/zoom/rotate
+      // revisits are served from RAM instead of the network.
+      maxTileCacheSize: 1500,
+      maxTileCacheZoomLevels: 12,
+      // Cross-fading forces continuous repaints while tiles settle.
+      fadeDuration: 0,
+      collectResourceTiming: false,
+
+      attributionControl: false,
+      dragRotate: true,
+      touchPitch: true,
+      pitchWithRotate: true,
+    } as maplibregl.MapOptions);
+
+    mapRef.current = map;
+
+    map.addControl(
+      new maplibregl.AttributionControl({
+        compact: true,
+        customAttribution: 'MEA Solar Roof 5 Sites • Esri World Imagery 3D Real Satellite',
+      }),
+      'bottom-right'
+    );
+
+    // --- Camera badge sync: rAF-coalesced AND time-throttled ---------------
+    // The raw rotate/pitch events fire once per frame. Feeding those straight
+    // into setState re-rendered this component 60x/sec during every drag,
+    // which is what made panning feel like it was seizing up.
+    const syncCameraBadges = () => {
+      if (cameraRafRef.current !== null) return;
+      cameraRafRef.current = requestAnimationFrame(() => {
+        cameraRafRef.current = null;
+        const m = mapRef.current;
+        if (!m) return;
+
+        const now = performance.now();
+        if (now - lastBadgeSyncRef.current < CAMERA_BADGE_THROTTLE_MS) return;
+        lastBadgeSyncRef.current = now;
+
+        const bearing = Math.round(m.getBearing());
+        const pitch = Math.round(m.getPitch());
+        setCamera((prev) =>
+          prev.bearing === bearing && prev.pitch === pitch ? prev : { bearing, pitch }
+        );
+      });
+    };
+
+    // --- Interaction class: drop blur + animations while the camera moves ---
+    const handleMoveStart = () => {
+      isMovingRef.current = true;
+      container.classList.add('map-interacting');
+    };
+    const handleMoveEnd = () => {
+      isMovingRef.current = false;
+      container.classList.remove('map-interacting');
+      lastBadgeSyncRef.current = 0; // force one final accurate sync
+      syncCameraBadges();
+    };
+
+    const handleClick = (e: maplibregl.MapMouseEvent) => {
+      const target = e.originalEvent?.target as HTMLElement | null;
+      if (target && target.closest('.maplibre-mea-marker')) return;
+      handlersRef.current.onSelectBuilding(null);
+    };
+
+    // Tile 404s at the edge of the bounds are expected; cap the log so a
+    // 10-hour session cannot fill the console (which itself retains memory).
+    const handleError = (e: maplibregl.ErrorEvent) => {
+      if (errorLogCountRef.current >= 20) return;
+      errorLogCountRef.current += 1;
+      console.warn('[map] ' + (e.error?.message ?? 'unknown map error'));
+      if (errorLogCountRef.current === 20) {
+        console.warn('[map] Further map errors suppressed for this session.');
+      }
+    };
+
+    const handleLoad = () => setIsStyleReady(true);
+
+    map.on('rotate', syncCameraBadges);
+    map.on('pitch', syncCameraBadges);
+    map.on('movestart', handleMoveStart);
+    map.on('moveend', handleMoveEnd);
+    map.on('click', handleClick);
+    map.on('error', handleError);
+    map.on('load', handleLoad);
+
+    // --- WebGL context loss: the classic long-uptime kiosk failure ---------
+    const canvas = map.getCanvas();
+    let restoreTimer: number | null = null;
+
+    const handleContextLost = (event: Event) => {
+      event.preventDefault(); // required, or the browser will not try to restore
+      setGlLost(true);
+      console.warn('[map] WebGL context lost - waiting for restore.');
+      restoreTimer = window.setTimeout(() => {
+        console.warn('[map] WebGL context did not return - rebuilding the map.');
+        setRemountKey((k) => k + 1);
+      }, 6000);
+    };
+
+    const handleContextRestored = () => {
+      if (restoreTimer !== null) {
+        window.clearTimeout(restoreTimer);
+        restoreTimer = null;
+      }
+      setGlLost(false);
+      mapRef.current?.triggerRepaint();
+      console.info('[map] WebGL context restored.');
+    };
+
+    canvas.addEventListener('webglcontextlost', handleContextLost, false);
+    canvas.addEventListener('webglcontextrestored', handleContextRestored, false);
+
+    // Markers are plain DOM overlays — they do not need the style, or even a
+    // rendered frame. Gating them on 'load' meant that anything delaying the
+    // first paint (a hidden window, a slow tile server, a stalled GPU) also
+    // hid all five site pins. Signal readiness as soon as the Map exists.
+    setIsMapCreated(true);
+    if (map.isStyleLoaded()) setIsStyleReady(true);
+
+    // Dev-only console handle. Useful when checking the real 72" screen:
+    //   __meaMap.getPitch()  /  __meaMap.getBearing()  /  __meaMap.getStyle().sky
+    if (import.meta.env.DEV) {
+      (window as unknown as { __meaMap?: maplibregl.Map }).__meaMap = map;
+    }
+
+    // --- Teardown: everything above must be released -----------------------
+    return () => {
+      if (restoreTimer !== null) window.clearTimeout(restoreTimer);
+      if (cameraRafRef.current !== null) {
+        cancelAnimationFrame(cameraRafRef.current);
+        cameraRafRef.current = null;
+      }
+      if (orbitRafRef.current !== null) {
+        cancelAnimationFrame(orbitRafRef.current);
+        orbitRafRef.current = null;
+      }
+
+      canvas.removeEventListener('webglcontextlost', handleContextLost);
+      canvas.removeEventListener('webglcontextrestored', handleContextRestored);
+
+      map.off('rotate', syncCameraBadges);
+      map.off('pitch', syncCameraBadges);
+      map.off('movestart', handleMoveStart);
+      map.off('moveend', handleMoveEnd);
+      map.off('click', handleClick);
+      map.off('error', handleError);
+      map.off('load', handleLoad);
+
+      markersRef.current.forEach((handle) => {
+        handle.root.removeEventListener('click', handle.onClick);
+        handle.marker.remove();
+      });
+      markersRef.current.clear();
+
+      map.remove(); // releases the WebGL context, workers and tile cache
+      mapRef.current = null;
+      setIsMapCreated(false);
+      setIsStyleReady(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remountKey]);
+
+  // -------------------------------------------------------------------------
+  // Basemap switching - visibility toggle, no setStyle(), no tile refetch
+  // -------------------------------------------------------------------------
+  const applyLayerVisibility = useCallback((layer: SatelliteLayerStyle) => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const visibility = LAYER_VISIBILITY[layer];
+    Object.entries(visibility).forEach(([layerId, value]) => {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, 'visibility', value);
+      }
+    });
+  }, []);
+
+  const handleLayerChange = useCallback(
+    (layer: SatelliteLayerStyle) => {
+      setActiveLayer(layer);
+      applyLayerVisibility(layer);
+    },
+    [applyLayerVisibility]
+  );
+
+  // Re-apply once the style finishes loading (covers a click made during startup).
+  useEffect(() => {
+    if (!isStyleReady) return;
+    applyLayerVisibility(activeLayer);
+  }, [isStyleReady, activeLayer, applyLayerVisibility]);
+
+  // -------------------------------------------------------------------------
+  // Camera controls
+  // -------------------------------------------------------------------------
+  const handleResetGoogleEarthPerspective = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    handlersRef.current.onSelectBuilding(null);
+    map.flyTo({
+      center: REGIONAL_CENTER,
+      zoom: DEFAULT_ZOOM,
+      pitch: DEFAULT_PITCH,
+      bearing: DEFAULT_BEARING,
+      essential: true,
+      duration: 1800,
+    });
+  }, []);
+
+  const handleSetPitchPreset = useCallback((pitchVal: number) => {
+    mapRef.current?.easeTo({ pitch: Math.min(pitchVal, MAX_PITCH), duration: 800 });
+  }, []);
+
+  const handleTilt = useCallback((delta: number) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const nextPitch = Math.max(0, Math.min(MAX_PITCH, map.getPitch() + delta));
+    map.easeTo({ pitch: nextPitch, duration: 400 });
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Auto orbit - requestAnimationFrame, not setInterval(50)
+  // A 50 ms interval kept firing while the tab was hidden and drifted out of
+  // phase with the compositor. rAF is frame-locked, pauses automatically when
+  // the page is hidden, and the delta-time step keeps the speed constant.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isAutoOrbit) return;
+
+    let last = performance.now();
+
+    const step = (now: number) => {
+      const map = mapRef.current;
+      if (!map) {
+        orbitRafRef.current = null;
+        return;
+      }
+      const dt = Math.min(now - last, 100); // clamp after a background stall
+      last = now;
+
+      // Yield to the operator: never fight a drag that is in progress.
+      if (!document.hidden && !isMovingRef.current) {
+        const next = (map.getBearing() + (ORBIT_DEG_PER_SEC * dt) / 1000) % 360;
+        map.setBearing(next);
+      }
+      orbitRafRef.current = requestAnimationFrame(step);
+    };
+
+    orbitRafRef.current = requestAnimationFrame(step);
+
+    return () => {
+      if (orbitRafRef.current !== null) {
+        cancelAnimationFrame(orbitRafRef.current);
+        orbitRafRef.current = null;
+      }
+    };
+  }, [isAutoOrbit]);
+
+  const handleToggleAutoOrbit = useCallback(() => setIsAutoOrbit((prev) => !prev), []);
+
+  // -------------------------------------------------------------------------
+  // Markers: reconcile by id, then patch values in place
+  // -------------------------------------------------------------------------
+  /** Fast id -> metrics lookup for the marker patch loop. */
+  const metricsById = useMemo(() => {
+    const m = new Map<number, ResolvedSiteMetrics>();
+    siteMetrics.forEach((entry) => m.set(entry.buildingId, entry));
+    return m;
+  }, [siteMetrics]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isMapCreated) return;
+
+    const store = markersRef.current;
+    const liveIds = new Set<number>();
+
+    buildings.forEach((site) => {
+      liveIds.add(site.id);
+      let handle = store.get(site.id);
+
+      // --- Create only when this id has no marker yet ---
+      if (!handle) {
+        const { el, refs } = createMarkerElement(site);
+
+        const onClick = (e: MouseEvent) => {
+          e.stopPropagation();
+          handlersRef.current.onSelectBuilding(site);
+          handlersRef.current.onNavigateToSubpage?.(site);
+        };
+        el.addEventListener('click', onClick);
+
+        const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+          .setLngLat([site.lng, site.lat])
+          .addTo(map);
+
+        handle = {
+          marker,
+          root: el,
+          onClick,
+          lng: site.lng,
+          lat: site.lat,
+          ...refs,
+        };
+        store.set(site.id, handle);
+      }
+
+      // --- Patch: text nodes and class strings only ---
+      const metrics = metricsById.get(site.id) ?? emptySiteMetrics(site.id);
+      patchMarker(handle, site, selectedBuildingId === site.id, showPinCards, metrics);
+    });
+
+    // --- Remove markers for buildings that no longer exist ---
+    store.forEach((handle, id) => {
+      if (liveIds.has(id)) return;
+      handle.root.removeEventListener('click', handle.onClick);
+      handle.marker.remove();
+      store.delete(id);
+    });
+    // This effect re-runs on every data tick, and that is fine: reconciliation
+    // is a 5-element loop and the work it does is textContent assignment.
+    // The expensive part - innerHTML parsing and Marker construction - happens
+    // once per site id, not once per tick.
+  }, [isMapCreated, buildings, metricsById, selectedBuildingId, showPinCards]);
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
+  return (
+    <div className="relative w-full h-full min-h-[380px] bg-slate-950 overflow-hidden font-['Prompt',sans-serif] select-none">
+      {/* 1. MapLibre GL 3D Map Container */}
+      <div ref={mapContainerRef} className="w-full h-full z-10" />
+
+      {/* WebGL recovery notice */}
+      {glLost && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="glass-panel px-5 py-4 rounded-2xl border border-amber-500/40 flex items-center gap-3 text-sm">
+            <AlertTriangle className="w-5 h-5 text-amber-400" />
+            <span className="text-slate-200">
+              กำลังกู้คืนการแสดงผลแผนที่ 3D… (WebGL context restore)
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* 2. Top-Left: Google Earth 3D Mode Badge & Layer Controls */}
+      <div className="absolute top-3 left-3 z-20 flex flex-col gap-2 pointer-events-auto">
+        {/* Real Satellite Layer Selector */}
+        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 shadow-2xl border border-sky-500/30 text-xs backdrop-blur-md">
+          <button
+            onClick={() => handleLayerChange('esri-satellite')}
+            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              activeLayer === 'esri-satellite'
+                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+            }`}
+            title="ภาพถ่ายดาวเทียมจริงความละเอียดสูง (Esri World Imagery Real Satellite)"
+          >
+            <Satellite className="w-3.5 h-3.5 text-sky-400" />
+            <span className="text-[11px]">ดาวเทียมจริง</span>
+          </button>
+
+          <button
+            onClick={() => handleLayerChange('hybrid')}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              activeLayer === 'hybrid'
+                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+            }`}
+            title="ดาวเทียมจริง + เส้นขอบเขตภูมิประเทศ (Hybrid)"
+          >
+            <Layers className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="text-[11px]">Hybrid</span>
+          </button>
+
+          <button
+            onClick={() => handleLayerChange('dark')}
+            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              activeLayer === 'dark'
+                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+            }`}
+            title="แผนที่ Dark Cyber 3D"
+          >
+            <span className="text-xs">🌑</span>
+            <span className="text-[11px]">Dark 3D</span>
+          </button>
+        </div>
+
+        {/* Pin Telemetry Cards Toggle */}
+        <button
+          onClick={() => setShowPinCards((v) => !v)}
+          className={`glass-panel px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 border transition-all cursor-pointer shadow-lg backdrop-blur-md ${
+            showPinCards
+              ? 'bg-sky-950/70 border-sky-400/50 text-sky-200'
+              : 'bg-slate-900/80 border-slate-700 text-slate-400'
+          }`}
+        >
+          <Sliders className="w-3.5 h-3.5 text-sky-400" />
+          <span className="text-[11px] font-medium">
+            {showPinCards ? 'แสดงการ์ดบนหมุด 3D (เปิด)' : 'ซ่อนการ์ดบนหมุด'}
+          </span>
+        </button>
+
+        {/* Site pin management. The add/delete plumbing already existed in
+            buildingStorageService but had no way in from the map. */}
+        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 shadow-2xl border border-sky-500/30 backdrop-blur-md">
+          <button
+            id="btn-add-site-pin"
+            onClick={() => handlersRef.current.onOpenAddModal?.()}
+            title="เพิ่มหมุดไซต์ใหม่บนแผนที่"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-emerald-200 hover:bg-emerald-900/40 transition-colors cursor-pointer"
+          >
+            <MapPinPlus className="w-3.5 h-3.5 text-emerald-400" />
+            <span>เพิ่มไซต์</span>
+          </button>
+
+          <div className="w-px h-3.5 bg-slate-700" />
+
+          <button
+            id="btn-delete-site-pin"
+            onClick={() => {
+              const target = buildings.find((b) => b.id === selectedBuildingId);
+              if (target) handlersRef.current.onOpenDeleteDialog?.(target);
+            }}
+            disabled={selectedBuildingId === null}
+            title={
+              selectedBuildingId === null
+                ? 'เลือกหมุดบนแผนที่ก่อน จึงจะลบได้'
+                : 'ลบหมุดไซต์ที่เลือกอยู่'
+            }
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-rose-200 hover:bg-rose-900/40 transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+            <span>ลบไซต์</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 3. Top-Right: 3D Camera Angles, Tilt Presets & Auto Orbit */}
+      <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2 pointer-events-auto">
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleResetGoogleEarthPerspective}
+            className="glass-panel px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 border border-sky-500/30 hover:bg-sky-900/50 text-sky-200 transition-all cursor-pointer shadow-xl backdrop-blur-md"
+            title="รีเซ็ตมุมมอง Google Earth 3D (เฉียง 60 องศา)"
+          >
+            <Camera className="w-3.5 h-3.5 text-sky-400" />
+            <span className="text-[11px] font-medium hidden sm:inline">มุมมองเฉียง 3D (Google Earth)</span>
+            <span className="text-[11px] font-medium sm:hidden">3D เฉียง</span>
+          </button>
+
+          <button
+            onClick={handleToggleAutoOrbit}
+            className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xl backdrop-blur-md ${
+              isAutoOrbit
+                ? 'bg-amber-500/20 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.4)]'
+                : 'glass-panel border-sky-500/30 text-slate-300 hover:text-sky-300'
+            }`}
+            title="หมุนมุมมองรอบแผนที่ 3D อัตโนมัติ"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isAutoOrbit ? 'animate-spin' : ''}`} />
+            <span className="text-[11px] font-medium hidden md:inline">
+              {isAutoOrbit ? 'กำลังหมุน 3D' : 'หมุน 3D อัตโนมัติ'}
+            </span>
+          </button>
+        </div>
+
+        {/* Row 2: 3D Tilt Angle Presets */}
+        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 border border-sky-500/30 shadow-xl backdrop-blur-md text-xs">
+          <span className="text-[10px] text-slate-400 px-1 font-mono hidden sm:inline">มุมเอียง:</span>
+
+          <button
+            onClick={() => handleSetPitchPreset(60)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              Math.abs(camera.pitch - 60) <= 3
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองเฉียง 60 องศา (Google Earth Perspective)"
+          >
+            60° เฉียง
+          </button>
+
+          <button
+            onClick={() => handleSetPitchPreset(MAX_PITCH)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              Math.abs(camera.pitch - MAX_PITCH) <= 3
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองเฉียงสูงสุด 65 องศา (จำกัดไว้ไม่ให้เส้นขอบฟ้าเข้าเฟรม จอจึงไม่มีขอบดำ)"
+          >
+            {MAX_PITCH}° เฉียงสูง
+          </button>
+
+          <button
+            onClick={() => handleSetPitchPreset(45)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              Math.abs(camera.pitch - 45) <= 3
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองเฉียง 45 องศา (Isometric 3D)"
+          >
+            45°
+          </button>
+
+          <button
+            onClick={() => handleSetPitchPreset(0)}
+            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+              camera.pitch <= 5
+                ? 'bg-sky-500/40 text-white border border-sky-400'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+            title="มุมมองแนวระนาบ 2D จากด้านบน"
+          >
+            0° แนวราบ
+          </button>
+        </div>
+
+        {/* Row 3: 3D Camera Interactive Controls */}
+        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 border border-sky-500/30 shadow-xl backdrop-blur-md">
+          <button
+            onClick={() => handleTilt(10)}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
+            title="เพิ่มมุมเฉียง 3D (Tilt Up)"
+          >
+            <ArrowUp className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => handleTilt(-10)}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
+            title="ลดมุมเฉียง 3D (Tilt Down)"
+          >
+            <ArrowDown className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
+
+          <button
+            onClick={() => mapRef.current?.zoomIn()}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
+            title="ขยายแผนที่ (Zoom In)"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => mapRef.current?.zoomOut()}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
+            title="ย่อแผนที่ (Zoom Out)"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+      </div>
+
+      {/*
+        4. Bottom-Right: combined production across all 5 regional sites.
+
+        Anchored to the bottom edge rather than stacked under the camera
+        controls: the control column is ~150px tall and this panel ~275px, so
+        stacking them overflowed the map on anything shorter than a large
+        display. Bottom-right keeps both fully visible at any height.
+      */}
+      <div className="absolute bottom-3 right-3 z-20 pointer-events-auto">
+        <RegionalTotalsPanel totals={totals} />
+      </div>
+
+      {/* 5. Bottom-Left: Google Earth 3D Interaction Guide */}
+      <div className="absolute bottom-3 left-3 z-20 pointer-events-none hidden md:flex items-center gap-2">
+        <div className="glass-panel px-3 py-1.5 rounded-xl text-[10px] text-slate-300 border border-sky-500/20 shadow-xl flex items-center gap-2 backdrop-blur-md">
+          <Compass className="w-3.5 h-3.5 text-sky-400" />
+          <span>
+            <strong>ภาพถ่ายดาวเทียมจริง 3D</strong> • คลิกขวาลาก / กด Ctrl+ลาก: ปรับมุมเฉียงและหมุน 360° • คลิกซ้ายลาก: เลื่อนแผนที่ • หมุนลูกกลิ้ง: ซูมเข้า/ออก
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Memoised: with every callback prop wrapped in useCallback over in App.tsx,
+ * opening a modal or ticking the header clock no longer re-renders the map
+ * subtree at all.
+ */
+export const Solar3DViewer = React.memo(Solar3DViewerImpl);
+Solar3DViewer.displayName = 'Solar3DViewer';
