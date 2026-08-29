@@ -38,7 +38,8 @@ import {
   ExternalLink,
   Sparkles,
   Lock,
-  PlugZap
+  PlugZap,
+  MapPinPlus
 } from 'lucide-react';
 
 interface SolarEdgeSettingsModalProps {
@@ -273,6 +274,43 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                 </div>
               </button>
             </div>
+          </div>
+
+          {/* 2b. Site edit tools. Off during a ceremony: "ลบไซต์" sits one tap
+              away from removing a pin, and the screen is often unattended. */}
+          <div className="p-3 rounded-2xl bg-slate-900/60 border border-sky-500/20 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-slate-300 font-semibold flex items-center gap-1.5">
+                <MapPinPlus className="w-3.5 h-3.5 text-emerald-400" />
+                <span>เครื่องมือแก้ไขไซต์บนแผนที่ (เพิ่มไซต์ / ลบไซต์)</span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1 leading-snug">
+                ปิดไว้ระหว่างงานพิธี เพื่อไม่ให้เผลอกดลบหมุดไซต์ เปิดเมื่อต้องการแก้ไขแผนที่
+              </p>
+            </div>
+
+            <button
+              type="button"
+              id="btn-toggle-site-edit-tools"
+              role="switch"
+              aria-checked={formData.showSiteEditTools}
+              onClick={() =>
+                setFormData({ ...formData, showSiteEditTools: !formData.showSiteEditTools })
+              }
+              className={`shrink-0 w-14 h-7 rounded-full border transition-colors cursor-pointer relative ${
+                formData.showSiteEditTools
+                  ? 'bg-emerald-500/30 border-emerald-400'
+                  : 'bg-slate-950/80 border-slate-700'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 w-5 h-5 rounded-full transition-all ${
+                  formData.showSiteEditTools
+                    ? 'left-8 bg-emerald-300'
+                    : 'left-0.5 bg-slate-600'
+                }`}
+              />
+            </button>
           </div>
 
           {/* 3. Backend connection status (replaces the old API key field) */}

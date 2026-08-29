@@ -217,6 +217,12 @@ export interface SolarEdgeConfig {
   lastSyncTime: string;
   pollIntervalSec: number;
   autoSyncMinutes?: number;
+  /**
+   * Show the "เพิ่มไซต์ / ลบไซต์" tools on the map. Off by default: on an
+   * unattended ceremony screen a stray tap on "ลบไซต์" removes a site pin, and
+   * the operator turns these on from the settings modal only while editing.
+   */
+  showSiteEditTools: boolean;
 }
 
 export interface SolarEdgeSiteOverview {

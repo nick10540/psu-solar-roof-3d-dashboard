@@ -45,7 +45,6 @@ import {
 import {
   PSU_ALL_BUILDINGS,
   INITIAL_WEATHER,
-  INITIAL_SOLAREDGE_CONFIG,
   SITE_OVERVIEW_DEFAULT,
   generateDayPowerData,
   generateWeekPowerData,
@@ -59,7 +58,9 @@ import {
   saveBuildingSiteBinding,
   getDailyQuotaInfo,
   MOCK_SOLAREDGE_SITES,
-  fetchBackendHealth
+  fetchBackendHealth,
+  loadSolarEdgeConfig,
+  saveSolarEdgeConfig
 } from './services/solarEdgeService';
 import {
   saveBuildingCoords,
@@ -82,6 +83,7 @@ import {
 import { Solar3DViewer } from './components/Solar3DViewer';
 import { SiteDetailSubpage } from './components/SiteDetailSubpage';
 import { HeaderBar } from './components/HeaderBar';
+import { CeremonyHero } from './components/CeremonyHero';
 import { BuildingDetailModal } from './components/BuildingDetailModal';
 import { SolarEdgeSettingsModal } from './components/SolarEdgeSettingsModal';
 import { BuildingBindingModal } from './components/BuildingBindingModal';
@@ -96,6 +98,14 @@ interface LoadOptions {
   forceRefresh?: boolean;
   /** Background refresh: no spinner, no layout change, non-urgent React update. */
   silent?: boolean;
+  /**
+   * Supersede a request that is still in the air instead of backing off.
+   *
+   * Used by the mount / config-change effect, whose run represents a NEW intent
+   * rather than an extra tick. The interval poll leaves this off so a slow
+   * request can never have a queue stack up behind it.
+   */
+  takeover?: boolean;
 }
 
 export default function App() {
@@ -106,14 +116,18 @@ export default function App() {
   const [buildings, setBuildings] = useState<BuildingInfo[]>(() => loadActiveBuildings());
   const [overview, setOverview] = useState<SolarEdgeSiteOverview>(SITE_OVERVIEW_DEFAULT);
   const [weather] = useState<CampusWeather>(INITIAL_WEATHER);
-  const [config, setConfig] = useState<SolarEdgeConfig>(INITIAL_SOLAREDGE_CONFIG);
+  // Restored from localStorage (falling back to INITIAL_SOLAREDGE_CONFIG the
+  // first time this browser ever runs the dashboard) so the data-source mode
+  // and poll cadence survive a reload. A kiosk that reloads unattended would
+  // otherwise come back up in Mock mode with nobody there to switch it back.
+  const [config, setConfig] = useState<SolarEdgeConfig>(loadSolarEdgeConfig);
 
   // SolarEdge Monitoring API State.
-  // Seeded with the mock catalogue only when the app starts in mock mode -
-  // starting Live with a pre-populated site list would imply a connection that
-  // does not exist yet.
+  // Seeded with the mock catalogue only when the RESTORED config starts in
+  // mock mode - starting Live with a pre-populated site list would imply a
+  // connection that does not exist yet.
   const [solarEdgeSites, setSolarEdgeSites] = useState<SolarEdgeRawSite[]>(() =>
-    INITIAL_SOLAREDGE_CONFIG.useMock ? MOCK_SOLAREDGE_SITES : []
+    loadSolarEdgeConfig().useMock ? MOCK_SOLAREDGE_SITES : []
   );
   const [solarEdgeOverviews, setSolarEdgeOverviews] = useState<Record<number, SolarEdgeTransformedOverview>>({});
   const [quotaInfo, setQuotaInfo] = useState<SolarEdgeQuotaInfo>(getDailyQuotaInfo);
@@ -145,6 +159,9 @@ export default function App() {
   const [isAddBuildingModalOpen, setIsAddBuildingModalOpen] = useState<boolean>(false);
   const [deleteCandidateBuilding, setDeleteCandidateBuilding] = useState<BuildingInfo | null>(null);
 
+  /** Header bar kept open by the grab handle, for pointers that cannot hover. */
+  const [isHeaderPinned, setIsHeaderPinned] = useState<boolean>(false);
+
   // --- Polling bookkeeping (refs: never trigger a render) ---
   const abortRef = useRef<AbortController | null>(null);
   const inFlightRef = useRef<boolean>(false);
@@ -166,10 +183,22 @@ export default function App() {
   // 1. SolarEdge fetching — cancellable, non-overlapping, background-friendly
   // ---------------------------------------------------------------------------
   const loadSolarEdgeData = useCallback(
-    async ({ forceRefresh = false, silent = false }: LoadOptions = {}) => {
+    async ({ forceRefresh = false, silent = false, takeover = false }: LoadOptions = {}) => {
       // A slow request must never let a second one stack behind it. Over a
       // 10-hour session, overlapping polls are how a fetch queue turns into a leak.
-      if (inFlightRef.current) return;
+      //
+      // A `takeover` caller is the exception. React StrictMode mounts, unmounts
+      // and remounts in dev: the unmount aborts the first mount's request, and
+      // the remount's run then found this latch still set and backed off — so
+      // NOTHING was ever committed and the dashboard sat empty. That stayed
+      // hidden while the app always booted into mock mode (which resolves
+      // without a round trip and wins the race); restoring a saved "Live" mode
+      // on start-up is what surfaced it. The same applies in production
+      // whenever the effect re-runs on a config change mid-request.
+      if (inFlightRef.current) {
+        if (!takeover) return;
+        abortRef.current?.abort();
+      }
       inFlightRef.current = true;
 
       const controller = new AbortController();
@@ -248,8 +277,13 @@ export default function App() {
         if (name === 'AbortError') return; // expected on unmount / config change
         console.error('Failed to load SolarEdge data:', err);
       } finally {
-        inFlightRef.current = false;
-        if (abortRef.current === controller) abortRef.current = null;
+        // Only the request that is still the current one may clear the latch.
+        // A superseded request finishing late would otherwise unlatch the newer
+        // one that replaced it, re-opening the overlapping-poll hole above.
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          inFlightRef.current = false;
+        }
         if (!silent && mountedRef.current) setIsSolarEdgeLoading(false);
       }
     },
@@ -265,7 +299,7 @@ export default function App() {
   useEffect(() => {
     const force = pendingForceRefreshRef.current;
     pendingForceRefreshRef.current = false;
-    loadSolarEdgeData({ forceRefresh: force });
+    loadSolarEdgeData({ forceRefresh: force, takeover: true });
   }, [loadSolarEdgeData]);
 
   /**
@@ -517,6 +551,7 @@ export default function App() {
       // from; the API key it used to share this check with moved to worker/.
       const sourceChanged = config.useMock !== newCfg.useMock;
       setConfig(newCfg);
+      saveSolarEdgeConfig(newCfg);
 
       if (sourceChanged) {
         // loadSolarEdgeData is about to be re-created for the new mode; let its
@@ -536,15 +571,48 @@ export default function App() {
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col p-2 sm:p-2.5 gap-2 font-['Prompt',sans-serif] select-none">
-      {/* 1. Top Header Bar (System Title & Status Widgets) */}
-      <HeaderBar
-        weather={weather}
-        config={config}
-        onOpenSettings={handleOpenSettings}
-        isLiveSimulation={isLiveSimulation}
-        onToggleLiveSimulation={handleToggleLiveSimulation}
-        onManualRefresh={handleManualRefresh}
-      />
+      {/* 1. Top Header Bar — parked off-screen so the ceremony masthead owns the
+          top of the display. It slides back down while the pointer rests on the
+          top edge, which keeps settings / refresh / brightness / fullscreen
+          reachable without a visible chrome bar during the event.
+
+          The wrapper is absolute (not part of the flex column) so the map below
+          gets the full height, and pointer-events are off everywhere except the
+          reveal strip and the bar itself — a transparent overlay across the top
+          of a MapLibre canvas would otherwise eat drags. */}
+      <div className="group pointer-events-none absolute inset-x-0 top-0 z-50 px-2 sm:px-2.5 pt-2">
+        {/* Reveal strip: 10px at the very top, clear of the map controls at top-3. */}
+        <div
+          className="pointer-events-auto absolute inset-x-0 top-0 h-2.5"
+          aria-hidden="true"
+        />
+
+        {/* Grab handle. Hover alone would strand a touchscreen — there is no
+            hover on a panel someone taps — so the bar is also click-toggled. */}
+        <button
+          type="button"
+          id="btn-toggle-header-bar"
+          onClick={() => setIsHeaderPinned((v) => !v)}
+          aria-expanded={isHeaderPinned}
+          title={isHeaderPinned ? 'ซ่อนแถบเครื่องมือ' : 'แสดงแถบเครื่องมือ'}
+          className="pointer-events-auto absolute left-1/2 top-0 -translate-x-1/2 h-2.5 w-16 rounded-b-md bg-slate-100/25 hover:bg-sky-300/70 transition-colors cursor-pointer"
+        />
+
+        <div
+          className={`pointer-events-auto transition-transform duration-300 ease-out group-hover:translate-y-0 group-focus-within:translate-y-0 ${
+            isHeaderPinned ? 'translate-y-0' : '-translate-y-[140%]'
+          }`}
+        >
+          <HeaderBar
+            weather={weather}
+            config={config}
+            onOpenSettings={handleOpenSettings}
+            isLiveSimulation={isLiveSimulation}
+            onToggleLiveSimulation={handleToggleLiveSimulation}
+            onManualRefresh={handleManualRefresh}
+          />
+        </div>
+      </div>
 
       {/* 2. Main Content Canvas */}
       <div className="relative flex-1 w-full h-full min-h-0 overflow-hidden rounded-2xl border border-sky-500/20 shadow-2xl">
@@ -577,10 +645,14 @@ export default function App() {
             onNavigateToSubpage={handleNavigateToSubpage}
             onOpenAddModal={handleOpenAddModal}
             onOpenDeleteDialog={handleOpenDeleteDialog}
+            showSiteEditTools={config.showSiteEditTools}
             timeOfDayHour={timeOfDayHour}
             onTimeOfDayChange={handleTimeOfDayChange}
           />
         )}
+
+        {/* Ceremony masthead — main map only; the site sub-page has its own header. */}
+        {navigationMode === 'main-map' && <CeremonyHero />}
       </div>
 
       {/* 5. Modals */}

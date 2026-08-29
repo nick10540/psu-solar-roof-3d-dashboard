@@ -75,6 +75,8 @@ interface Solar3DViewerProps {
   onNavigateToSubpage?: (building: BuildingInfo) => void;
   onOpenAddModal?: () => void;
   onOpenDeleteDialog?: (building: BuildingInfo) => void;
+  /** Show the add/delete site tools. Off during a ceremony so no stray tap can delete a pin. */
+  showSiteEditTools?: boolean;
   timeOfDayHour?: number;
   onTimeOfDayChange?: (hour: number) => void;
 }
@@ -380,6 +382,7 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
   onNavigateToSubpage,
   onOpenAddModal,
   onOpenDeleteDialog,
+  showSiteEditTools = false,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -865,7 +868,11 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
         </button>
 
         {/* Site pin management. The add/delete plumbing already existed in
-            buildingStorageService but had no way in from the map. */}
+            buildingStorageService but had no way in from the map.
+            Hidden unless the operator turns on edit tools in the settings modal:
+            "ลบไซต์" is one tap from removing a site pin, which is not something a
+            ceremony screen should offer a passer-by. */}
+        {showSiteEditTools && (
         <div className="glass-panel p-1 rounded-xl flex items-center gap-1 shadow-2xl border border-sky-500/30 backdrop-blur-md">
           <button
             id="btn-add-site-pin"
@@ -897,6 +904,7 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
             <span>ลบไซต์</span>
           </button>
         </div>
+        )}
       </div>
 
       {/* 3. Top-Right: 3D Camera Angles, Tilt Presets & Auto Orbit */}

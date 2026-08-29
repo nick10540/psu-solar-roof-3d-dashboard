@@ -45,6 +45,7 @@ export const INITIAL_SOLAREDGE_CONFIG: SolarEdgeConfig = {
   useMock: true,
   lastSyncTime: '21 ส.ค. 2569 10:30:00',
   pollIntervalSec: 15,
+  showSiteEditTools: false,
 };
 
 export const SITE_OVERVIEW_DEFAULT: SolarEdgeSiteOverview = {
