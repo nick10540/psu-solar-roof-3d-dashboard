@@ -30,7 +30,8 @@ import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { BuildingInfo } from '../types';
 import { RegionalTotalsPanel } from './RegionalTotalsPanel';
-import { ResolvedSiteMetrics, RegionalTotals } from '../services/siteMetricsService';
+import { ResolvedSiteMetrics, RegionalTotals, emptySiteMetrics } from '../services/siteMetricsService';
+import { NO_DATA } from './metricDisplay';
 import {
   buildUnifiedMapStyle,
   LAYER_VISIBILITY,
@@ -113,25 +114,6 @@ const CARD_BASE =
   'glass-panel-static rounded-xl shadow-2xl border text-white cursor-pointer transition-colors duration-200 overflow-hidden';
 const CARD_SELECTED = 'border-amber-400/90 bg-slate-900/95 ring-2 ring-amber-400/50';
 const CARD_IDLE = 'border-sky-400/60 bg-slate-950/90 hover:border-sky-300';
-
-/** Rendered wherever a metric is `null`. */
-const NO_DATA = '—';
-
-/** Defensive placeholder if a pin somehow has no resolved entry. */
-function emptySiteMetrics(buildingId: number): ResolvedSiteMetrics {
-  return {
-    buildingId,
-    siteId: null,
-    isBound: false,
-    hasData: false,
-    source: 'none',
-    currentPowerKw: null,
-    todayEnergyKwh: null,
-    lifetimeEnergyKwh: null,
-    capacityKwp: null,
-    lastUpdateTime: null,
-  };
-}
 
 function formatLifetime(kwh: number): { value: string; unit: string } {
   return kwh >= 10000

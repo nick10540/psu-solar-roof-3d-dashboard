@@ -11,7 +11,6 @@
 import React, { useState, useMemo } from 'react';
 import { 
   BuildingInfo, 
-  BuildingSiteBinding, 
   SolarEdgeTransformedOverview, 
   CampusWeather,
   TimeSeriesDataPoint,
@@ -19,6 +18,8 @@ import {
 } from '../types';
 import { totalInstalledKwp } from '../data/mockSolarData';
 import { resolveSiteMedia } from '../config/siteMedia';
+import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
+import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
 import { 
   ArrowLeft, 
   Zap, 
@@ -37,14 +38,22 @@ import {
   Calendar,
   Clock,
   Sparkles,
-  Link2
+  Link2,
+  WifiOff,
+  Database
 } from 'lucide-react';
 
 interface SiteDetailSubpageProps {
   site: BuildingInfo;
   allSites: BuildingInfo[];
-  binding?: BuildingSiteBinding;
   overview?: SolarEdgeTransformedOverview | null;
+  /**
+   * What this site is allowed to display, resolved once in App by
+   * resolveAllSiteMetrics - the very same entry its map pin renders from.
+   */
+  metrics: ResolvedSiteMetrics;
+  /** Whether the dashboard as a whole is on the live API or the simulator. */
+  mode: DataSourceMode;
   weather: CampusWeather;
   dayData: TimeSeriesDataPoint[];
   weekData: TimeSeriesDataPoint[];
@@ -59,8 +68,9 @@ interface SiteDetailSubpageProps {
 export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   site,
   allSites,
-  binding,
   overview,
+  metrics,
+  mode,
   weather,
   dayData,
   weekData,
@@ -76,6 +86,53 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
 
   /** Footage for this site, or null when no file has been supplied for it. */
   const siteMedia = resolveSiteMedia(site.code);
+
+  /**
+   * Every figure on this page comes from the resolved metrics - the very same
+   * entry the map pin renders from - and never from `overview ? ... : site....`.
+   *
+   * That fallback was the bug: in Live API mode an unbound site has no
+   * overview, so the page quietly printed the building's seeded demo figures
+   * under the caption "จาก SolarEdge API" while the pin for the same site
+   * correctly read "ยังไม่ได้ผูก API". An invented number wearing the API's
+   * name is worse than a blank one, and this screen is shown publicly.
+   *
+   * A `null` field means "no data" and renders as NO_DATA everywhere below.
+   * `null` rather than 0 is deliberate: 0 kW is a real reading at night.
+   */
+  const { currentPowerKw, todayEnergyKwh, lifetimeEnergyKwh, capacityKwp } = metrics;
+
+  /** Genuine SolarEdge readings for a site explicitly mapped to this pin. */
+  const isLive = metrics.source === 'live';
+  /** Simulated figures. Allowed - but never unlabelled. */
+  const isSimulated = metrics.source === 'mock';
+  /** Not mapped to a SolarEdge site, or mapped but not reporting. */
+  const hasNoData = !metrics.hasData;
+
+  /** Dims a figure with nothing behind it, matching the map's no-data pins. */
+  const valueTone = hasNoData ? 'text-slate-600' : 'text-white';
+
+  const lifetimeFormatted =
+    lifetimeEnergyKwh === null
+      ? NO_DATA
+      : lifetimeEnergyKwh >= 10000
+        ? `${(lifetimeEnergyKwh / 1000).toFixed(1)} MWh`
+        : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
+
+  // Derived figures follow their input: blank in, blank out. Each is computed
+  // from the number displayed directly above it on this page.
+  const revenueTodayText =
+    todayEnergyKwh === null
+      ? NO_DATA
+      : `~฿${(todayEnergyKwh * 4.2).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  const lifetimeCo2Text =
+    lifetimeEnergyKwh === null ? NO_DATA : `~${(lifetimeEnergyKwh * 0.0005).toFixed(1)} ตัน`;
+  const co2TodayText =
+    todayEnergyKwh === null ? NO_DATA : `~${((todayEnergyKwh * 0.56) / 1000).toFixed(2)} ตัน/วัน`;
+  const treesTodayText =
+    todayEnergyKwh === null ? NO_DATA : `~${Math.round(todayEnergyKwh * 0.08)} ต้น`;
+  const fuelTodayText =
+    todayEnergyKwh === null ? NO_DATA : `~${Math.round(todayEnergyKwh * 0.23)} ลิตร`;
 
   // Scaled time series dataset for this specific site's capacity.
   //
@@ -94,7 +151,10 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
    * sample, so the line ends where the data does rather than running flat to
    * midnight.
    */
-  const measuredCurve = overview?.powerCurveToday;
+  // Only a genuine live reading counts as measured. A mock overview can carry
+  // a curve too, and treating that as measured would put a "วัดจริง" badge
+  // over simulated data.
+  const measuredCurve = isLive ? overview?.powerCurveToday : undefined;
 
   const siteDayData = useMemo(() => {
     if (measuredCurve?.length) {
@@ -147,30 +207,6 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
 
   /** Is the range on screen drawn from measurements rather than simulation? */
   const isMeasuredRange = selectedTimeRange === 'day' && !!measuredCurve?.length;
-
-  const currentPowerKw = overview ? overview.currentPowerKw : site.currentPowerKw;
-  const todayEnergyKwh = overview ? overview.dailyEnergyKwh : site.todayEnergyKwh;
-  const lifetimeEnergyKwh = overview ? overview.lifetimeEnergyKwh : site.lifetimeEnergyKwh;
-
-  /**
-   * Is this page showing measured data?
-   *
-   * When it is, anything we cannot measure must NOT fall back to the building's
-   * mock figures. The headline numbers were already live while the capacity,
-   * panel count, chart and inverter panel below stayed simulated — so the page
-   * showed 380 kWp for a site the API reports as 1500 kWp, under a real
-   * production figure. Mixed provenance is worse than either alone: it makes
-   * the invented parts look verified.
-   */
-  const isLive = !!overview && !overview.isMockData;
-
-  // Capacity comes from the API once live — site.capacityKwp is a hand-entered
-  // estimate and was wrong by a factor of ~4 on every site.
-  const capacityKwp = isLive ? overview!.peakPowerKwp : site.capacityKwp;
-
-  const lifetimeFormatted = lifetimeEnergyKwh >= 10000 
-    ? `${(lifetimeEnergyKwh / 1000).toFixed(1)} MWh` 
-    : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
 
   // SVG Chart Calculations
   const chartWidth = 700;
@@ -226,11 +262,33 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-sm sm:text-lg font-bold text-white tracking-wide flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                {/* The dot pulsed green whatever the page was showing. It now
+                    tracks the real source, so "live" is never implied. */}
+                <span
+                  className={`w-2.5 h-2.5 rounded-full ${
+                    isLive
+                      ? 'bg-emerald-400 animate-pulse'
+                      : isSimulated
+                        ? 'bg-amber-400 animate-pulse'
+                        : 'bg-slate-600'
+                  }`}
+                />
                 <span>MEA Solar Roof - {site.name}</span>
               </h2>
               <span className="text-[10px] font-mono bg-sky-950/80 text-sky-300 px-2 py-0.5 rounded border border-sky-500/40 font-bold">
                 {site.code}
+              </span>
+              {/* Same chip as the regional totals panel, so the map and this
+                  page always agree on which mode the dashboard is in. */}
+              <span
+                className={`text-[8.5px] font-mono px-1.5 py-0.5 rounded border font-bold flex items-center gap-1 ${
+                  mode === 'live'
+                    ? 'text-emerald-300 bg-emerald-950/80 border-emerald-600/40'
+                    : 'text-amber-300 bg-amber-950/70 border-amber-600/40'
+                }`}
+              >
+                {mode === 'live' ? <Database className="w-2.5 h-2.5" /> : <Sun className="w-2.5 h-2.5" />}
+                {mode === 'live' ? 'LIVE API' : 'MOCK'}
               </span>
             </div>
             <p className="text-[11px] text-slate-300 font-light hidden sm:block">
@@ -269,14 +327,13 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <span className="font-medium">กำลังผลิตปัจจุบัน (kW)</span>
             <Zap className="w-4 h-4 text-amber-400 animate-pulse" />
           </div>
-          <div className="text-2xl sm:text-3xl font-black font-mono text-white tracking-tight flex items-baseline gap-1">
-            <span>{currentPowerKw.toFixed(1)}</span>
-            <span className="text-xs font-normal text-amber-300/80">kW</span>
+          <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
+            <span className={valueTone}>{fmt(currentPowerKw, 1)}</span>
+            {currentPowerKw !== null && (
+              <span className="text-xs font-normal text-amber-300/80">kW</span>
+            )}
           </div>
-          <div className="text-[10px] text-slate-300 mt-1 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            <span>SolarEdge Active Inverters</span>
-          </div>
+          <SourceCaption metrics={metrics} liveLabel="SolarEdge Active Inverters" />
           <div className="absolute right-0 bottom-0 translate-x-3 translate-y-3 w-16 h-16 bg-amber-500/10 rounded-full blur-xl pointer-events-none" />
         </div>
 
@@ -286,13 +343,14 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <span className="font-medium">พลังงานที่ผลิตได้วันนี้</span>
             <Sun className="w-4 h-4 text-sky-400" />
           </div>
-          <div className="text-2xl sm:text-3xl font-black font-mono text-white tracking-tight flex items-baseline gap-1">
-            <span>{todayEnergyKwh.toLocaleString()}</span>
-            <span className="text-xs font-normal text-sky-300/80">kWh</span>
+          <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
+            <span className={valueTone}>{fmt(todayEnergyKwh)}</span>
+            {todayEnergyKwh !== null && (
+              <span className="text-xs font-normal text-sky-300/80">kWh</span>
+            )}
           </div>
-          <div className="text-[10px] text-slate-300 mt-1">
-            ประมาณการรายได้ ~฿{(todayEnergyKwh * 4.2).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          </div>
+          <div className="text-[10px] text-slate-400 mt-1">ประมาณการรายได้ {revenueTodayText}</div>
+          <SourceCaption metrics={metrics} liveLabel="จาก SolarEdge API" />
         </div>
 
         {/* Metric 3: พลังงานผลิตทั้งหมด (Lifetime Energy) */}
@@ -301,13 +359,16 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <span className="font-medium">พลังงานผลิตได้ทั้งหมด</span>
             <Leaf className="w-4 h-4 text-emerald-400" />
           </div>
-          <div className="text-2xl sm:text-3xl font-black font-mono text-white tracking-tight flex items-baseline gap-1">
-            <span>{lifetimeFormatted}</span>
+          <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
+            <span className={valueTone}>{lifetimeFormatted}</span>
           </div>
-          <div className="text-[10px] text-slate-300 mt-1 flex items-center gap-1">
-            <span className="text-emerald-300 font-bold">ลด CO₂:</span>
-            <span>~{(lifetimeEnergyKwh * 0.0005).toFixed(1)} ตัน</span>
+          <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
+            <span className={`font-bold ${hasNoData ? 'text-slate-600' : 'text-emerald-300'}`}>
+              ลด CO₂:
+            </span>
+            <span>{lifetimeCo2Text}</span>
           </div>
+          <SourceCaption metrics={metrics} liveLabel="จาก SolarEdge API" />
         </div>
 
         {/* Metric 4: กำลังติดตั้งจริง (kWp) & SolarEdge Info */}
@@ -316,21 +377,28 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <span className="font-medium">กำลังติดตั้งจริง (kWp)</span>
             <ShieldCheck className="w-4 h-4 text-blue-400" />
           </div>
-          <div className="text-2xl sm:text-3xl font-black font-mono text-white tracking-tight flex items-baseline gap-1">
-            <span>{capacityKwp.toFixed(0)}</span>
-            <span className="text-xs font-normal text-blue-300/80">kWp</span>
+          <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
+            <span className={valueTone}>{fmt(capacityKwp, 0)}</span>
+            {capacityKwp !== null && (
+              <span className="text-xs font-normal text-blue-300/80">kWp</span>
+            )}
           </div>
-          <div className="text-[10px] text-slate-300 mt-1 flex items-center justify-between">
+          <div className="text-[10px] text-slate-400 mt-1 flex items-center justify-between gap-2">
             {/* Panel count is not in the API — showing the hand-entered figure
-                next to a live capacity would imply it was measured too. */}
-            <span>{isLive ? 'จาก SolarEdge API' : `${site.panelCount} แผง PV`}</span>
+                next to a live capacity would imply it was measured too, and
+                showing it beside an em-dash would imply the site is reporting.
+                The provenance line below carries the state in both cases. */}
+            <span className="truncate">
+              {isSimulated ? `${site.panelCount} แผง PV (จำลอง)` : ''}
+            </span>
             <button
               onClick={() => onOpenBindingModal(site)}
-              className="text-amber-300 font-bold underline hover:text-amber-200 cursor-pointer"
+              className="text-amber-300 font-bold underline hover:text-amber-200 cursor-pointer shrink-0"
             >
               ตั้งค่า SolarEdge API
             </button>
           </div>
+          <SourceCaption metrics={metrics} liveLabel="จาก SolarEdge API" />
         </div>
       </div>
 
@@ -343,20 +411,20 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <div className="flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-sky-400" />
               <h3 className="font-bold text-sm text-white">กราฟกำลังการผลิตไฟฟ้า Solar Roof ({site.name})</h3>
-              {/* Only the daily curve is measured. The other ranges are still a
-                  shared simulation scaled by capacity, and on a live page that
-                  has to be labelled or it reads as data. */}
-              {isLive && (
-                <span
-                  className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
-                    isMeasuredRange
-                      ? 'text-emerald-300 bg-emerald-950/50 border-emerald-600/40'
-                      : 'text-amber-300 bg-amber-950/50 border-amber-600/40'
-                  }`}
-                >
-                  {isMeasuredRange ? 'วัดจริง' : 'จำลอง'}
-                </span>
-              )}
+              {/* Only the daily curve is ever measured. Every other range is a
+                  shared simulation scaled by capacity, so it has to be labelled
+                  or it reads as data. The badge used to render only on a live
+                  page, which left an unbound site drawing a simulated curve
+                  with nothing on screen saying so. */}
+              <span
+                className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                  isMeasuredRange
+                    ? 'text-emerald-300 bg-emerald-950/50 border-emerald-600/40'
+                    : 'text-amber-300 bg-amber-950/50 border-amber-600/40'
+                }`}
+              >
+                {isMeasuredRange ? 'วัดจริง' : 'จำลอง'}
+              </span>
             </div>
 
             {/* Time Range Pills */}
@@ -376,6 +444,19 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Nothing behind this pin: the curve below is a shared simulation
+              scaled by capacity, so say it in words rather than leaving a small
+              badge to carry it on a screen people read from across a room. */}
+          {hasNoData && (
+            <div className="flex items-start gap-2 bg-amber-950/40 border border-amber-700/40 rounded-xl px-2.5 py-2">
+              <WifiOff className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+              <div className="text-[10px] text-amber-200/90 leading-snug">
+                <span className="font-bold">{noDataHeadline(metrics)}</span>{' — '}
+                กราฟและตัวเลขด้านล่างเป็นค่าจำลอง ไม่ใช่ค่าที่วัดได้จากไซต์นี้
+              </div>
+            </div>
+          )}
 
           {/* SVG Area Chart */}
           <div className="w-full relative h-64 sm:h-72">
@@ -495,20 +576,20 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
           <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-xs">
             <div className="bg-slate-900/60 p-2 rounded-xl border border-sky-500/10 text-center">
               <div className="text-[10px] text-slate-400">ลดการปล่อย CO₂</div>
-              <div className="font-bold text-emerald-300 font-mono mt-0.5">
-                ~{(todayEnergyKwh * 0.56 / 1000).toFixed(2)} ตัน/วัน
+              <div className={`font-bold font-mono mt-0.5 ${hasNoData ? 'text-slate-600' : 'text-emerald-300'}`}>
+                {co2TodayText}
               </div>
             </div>
             <div className="bg-slate-900/60 p-2 rounded-xl border border-sky-500/10 text-center">
               <div className="text-[10px] text-slate-400">เทียบเท่าปลูกต้นไม้</div>
-              <div className="font-bold text-amber-300 font-mono mt-0.5">
-                ~{Math.round(todayEnergyKwh * 0.08)} ต้น
+              <div className={`font-bold font-mono mt-0.5 ${hasNoData ? 'text-slate-600' : 'text-amber-300'}`}>
+                {treesTodayText}
               </div>
             </div>
             <div className="bg-slate-900/60 p-2 rounded-xl border border-sky-500/10 text-center">
               <div className="text-[10px] text-slate-400">ประหยัดน้ำมันเชื้อเพลิง</div>
-              <div className="font-bold text-sky-300 font-mono mt-0.5">
-                ~{Math.round(todayEnergyKwh * 0.23)} ลิตร
+              <div className={`font-bold font-mono mt-0.5 ${hasNoData ? 'text-slate-600' : 'text-sky-300'}`}>
+                {fuelTodayText}
               </div>
             </div>
           </div>

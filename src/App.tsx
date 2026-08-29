@@ -78,6 +78,8 @@ import {
   dataSourceModeFromConfig,
   resolveAllSiteMetrics,
   aggregateSiteMetrics,
+  emptySiteMetrics,
+  ResolvedSiteMetrics,
 } from './services/siteMetricsService';
 
 import { Solar3DViewer } from './components/Solar3DViewer';
@@ -567,7 +569,23 @@ export default function App() {
   );
 
   const activeBinding = selectedBuilding ? bindings[selectedBuilding.id] : undefined;
-  const activeOverview = activeBinding?.siteId ? solarEdgeOverviews[activeBinding.siteId] : null;
+  // Mirrors the resolver’s own rule: a siteId counts only while the
+  // binding is actually active, so a deactivated binding cannot leak an
+  // overview past the resolver and into a component.
+  const activeOverview =
+    activeBinding?.isBound && activeBinding.siteId
+      ? solarEdgeOverviews[activeBinding.siteId] ?? null
+      : null;
+
+  /**
+   * The selected site's entry from the same resolution the map pins use, so the
+   * sub-page and its pin can never disagree about whether a site is reporting.
+   * The fallback is defensive only - a selection left over from a deleted pin.
+   */
+  const activeMetrics: ResolvedSiteMetrics | null = selectedBuilding
+    ? siteMetrics.find((m) => m.buildingId === selectedBuilding.id) ??
+      emptySiteMetrics(selectedBuilding.id)
+    : null;
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col p-2 sm:p-2.5 gap-2 font-['Prompt',sans-serif] select-none">
@@ -617,12 +635,13 @@ export default function App() {
       {/* 2. Main Content Canvas */}
       <div className="relative flex-1 w-full h-full min-h-0 overflow-hidden rounded-2xl border border-sky-500/20 shadow-2xl">
         {/* Branch: Site Detail Subpage (หน้าย่อย) vs Main Map (Google Earth 3D / Satellite) */}
-        {navigationMode === 'site-detail' && selectedBuilding ? (
+        {navigationMode === 'site-detail' && selectedBuilding && activeMetrics ? (
           <SiteDetailSubpage
             site={selectedBuilding}
             allSites={buildings}
-            binding={activeBinding}
             overview={activeOverview}
+            metrics={activeMetrics}
+            mode={dataSourceMode}
             weather={weather}
             dayData={dayData}
             weekData={weekData}
@@ -680,7 +699,8 @@ export default function App() {
       {isDetailModalOpen && selectedBuilding && (
         <BuildingDetailModal
           building={selectedBuilding}
-          binding={activeBinding}
+          metrics={activeMetrics}
+          mode={dataSourceMode}
           overview={activeOverview}
           onOpenBindingModal={(bld) => {
             setIsDetailModalOpen(false);
