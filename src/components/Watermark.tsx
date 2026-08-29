@@ -44,22 +44,21 @@ export const Watermark: React.FC<WatermarkProps> = ({
         ))}
       </div>
 
-      {/* 2. Top-Center Elegant Floating Security Badge */}
-      <div className="mx-auto mt-14 sm:mt-16 bg-slate-950/60 backdrop-blur-sm border border-amber-400/25 px-3 py-1 rounded-full shadow-lg flex items-center gap-2">
+      {/* Spacer: keeps the badges pinned to the bottom of the flex column.
+          The security badge used to float at top-centre, where it collided with
+          the ceremony masthead over the map. */}
+      <div aria-hidden="true" />
+
+      {/* 2. Bottom-Left Floating Security Badge.
+          The bottom-right corner stamp that used to sit alongside this was
+          removed: it landed on top of the regional totals panel, covering the
+          CO2 and tree figures. One badge plus the background stamp is enough to
+          mark the build as a demo. */}
+      <div className="mb-14 md:mb-1 self-start bg-slate-950/60 backdrop-blur-sm border border-amber-400/25 px-3 py-1 rounded-full shadow-lg flex items-center gap-2">
         <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
         <span className="text-[10px] sm:text-xs font-mono font-semibold tracking-wider text-amber-300/90 uppercase">
           {text} — <span className="text-amber-400 font-bold">{subtext}</span>
         </span>
-      </div>
-
-      {/* 3. Bottom-Right Corner Discreet Stamp */}
-      <div className="self-end mb-14 md:mb-1 bg-slate-950/80 backdrop-blur-md border border-sky-400/20 px-2.5 py-1 rounded-lg shadow-xl text-right">
-        <div className="text-[9px] font-mono uppercase tracking-wider text-slate-400 font-semibold">
-          {text}
-        </div>
-        <div className="text-[8px] font-mono tracking-widest text-amber-400/90 font-bold">
-          {subtext}
-        </div>
       </div>
     </div>
   );

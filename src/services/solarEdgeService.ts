@@ -33,8 +33,10 @@ import {
   SolarEdgeQuotaInfo,
   SolarEdgeBackendStatus,
   SolarEdgeSiteStatus,
-  BuildingSiteBinding
+  BuildingSiteBinding,
+  SolarEdgeConfig
 } from '../types';
+import { INITIAL_SOLAREDGE_CONFIG } from '../data/mockSolarData';
 
 // Constants
 /**
@@ -151,6 +153,7 @@ const STORAGE_KEY_SITES_CACHE = 'solaredge_sites_cache_v5';
 const STORAGE_KEY_OVERVIEWS_CACHE = 'solaredge_overviews_cache_v5';
 const STORAGE_KEY_DAILY_CALLS = 'solaredge_daily_calls_v5';
 const STORAGE_KEY_BINDINGS = 'mea_solar_building_bindings_v5';
+const STORAGE_KEY_CONFIG = 'mea_solar_config_v5';
 
 /** Live SolarEdge site IDs, keyed by the dashboard's building id. */
 export const LIVE_SITE_IDS = {
@@ -877,5 +880,45 @@ export function saveBuildingSiteBinding(binding: BuildingSiteBinding): Record<nu
   } catch (err) {
     console.error('Failed to save building binding:', err);
     return loadBuildingSiteBindings();
+  }
+}
+
+// -------------------------------------------------------------
+// Dashboard Config Persistence (data source mode, poll cadence)
+// -------------------------------------------------------------
+/**
+ * Load the operator's saved dashboard configuration.
+ *
+ * Without this, the settings modal's "save" only ever updated in-memory React
+ * state — App.tsx seeded `config` from the hard-coded INITIAL_SOLAREDGE_CONFIG
+ * on every mount, so a reload silently dropped the operator back to Mock mode.
+ * On a kiosk that reloads unattended, that turns a live board into a simulated
+ * one with nobody there to notice.
+ *
+ * No credential is involved: since the v2 migration the Fleet API Key lives in
+ * the backend (worker/), so what is stored here is only the data-source mode,
+ * the poll cadence and the default site.
+ *
+ * Merged over the defaults rather than returned as-is, so a field added to
+ * SolarEdgeConfig in a later release still has a sane value when reading a
+ * config object written by an older build.
+ */
+export function loadSolarEdgeConfig(): SolarEdgeConfig {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CONFIG);
+    if (!raw) return { ...INITIAL_SOLAREDGE_CONFIG };
+    const parsed = JSON.parse(raw);
+    return { ...INITIAL_SOLAREDGE_CONFIG, ...parsed };
+  } catch (err) {
+    console.error('Failed to load saved dashboard config, using defaults:', err);
+    return { ...INITIAL_SOLAREDGE_CONFIG };
+  }
+}
+
+export function saveSolarEdgeConfig(config: SolarEdgeConfig): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
+  } catch (err) {
+    console.error('Failed to save dashboard config:', err);
   }
 }

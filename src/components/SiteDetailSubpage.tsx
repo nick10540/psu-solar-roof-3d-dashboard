@@ -18,6 +18,7 @@ import {
   TimeRange
 } from '../types';
 import { totalInstalledKwp } from '../data/mockSolarData';
+import { resolveSiteMedia } from '../config/siteMedia';
 import { 
   ArrowLeft, 
   Zap, 
@@ -27,10 +28,8 @@ import {
   BarChart3, 
   Settings, 
   MapPin, 
-  ShieldCheck, 
-  Cpu, 
-  Thermometer, 
-  CheckCircle2, 
+  ShieldCheck,
+  Video,
   ExternalLink,
   ChevronRight,
   TrendingUp,
@@ -73,8 +72,10 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   onOpenDetailInspectionModal,
 }) => {
   const [selectedTimeRange, setSelectedTimeRange] = useState<TimeRange>('day');
-  const [activeInverterTab, setActiveInverterTab] = useState<number>(0);
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
+
+  /** Footage for this site, or null when no file has been supplied for it. */
+  const siteMedia = resolveSiteMedia(site.code);
 
   // Scaled time series dataset for this specific site's capacity.
   //
@@ -170,8 +171,6 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   const lifetimeFormatted = lifetimeEnergyKwh >= 10000 
     ? `${(lifetimeEnergyKwh / 1000).toFixed(1)} MWh` 
     : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
-
-  const selectedInverter = site.inverters[activeInverterTab] || site.inverters[0];
 
   // SVG Chart Calculations
   const chartWidth = 700;
@@ -515,111 +514,68 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
           </div>
         </div>
 
-        {/* Right 1 Col: Inverter Diagnostics & String Telemetries */}
+        {/* Right 1 Col: Site footage.
+            This slot used to hold per-inverter and PV-string telemetry. Live
+            mode has no device-level data (that needs the DEVICE_DATA scope,
+            which is not enabled), so the panel stood empty on every live site,
+            and in mock mode it filled the same space with invented serial
+            numbers and string voltages sitting under real production figures.
+            Footage of the actual site is honest and reads well on a 72" screen. */}
         <div className="glass-panel p-3 sm:p-4 rounded-2xl border border-sky-500/20 shadow-xl flex flex-col gap-3">
           {/* Header */}
           <div className="flex items-center justify-between pb-2 border-b border-slate-800">
             <div className="flex items-center gap-2">
-              <Cpu className="w-4 h-4 text-amber-400" />
-              <h3 className="font-bold text-sm text-white">
-                อินเวอร์เตอร์ SolarEdge{!isLive && ` (${site.inverterCount} เครื่อง)`}
-              </h3>
+              <Video className="w-4 h-4 text-amber-400" />
+              <h3 className="font-bold text-sm text-white">ภาพพื้นที่ติดตั้งจริง</h3>
             </div>
-            {!isLive && (
-              <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3" />
-                ทำงานปกติ
-              </span>
+            <span className="text-[10px] text-slate-400 font-mono truncate max-w-[9rem]">
+              {site.shortName || site.name}
+            </span>
+          </div>
+
+          {/* The clip, or an honest placeholder for a site with no file yet. */}
+          <div className="flex-1 min-h-[12rem] rounded-xl overflow-hidden border border-sky-500/20 bg-slate-950/80 relative">
+            {siteMedia ? (
+              siteMedia.kind === 'video' ? (
+                <video
+                  // Keyed by URL so switching sites swaps the source instead of
+                  // leaving the previous site's clip playing in the new panel.
+                  key={siteMedia.url}
+                  src={siteMedia.url}
+                  className="w-full h-full object-cover"
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  preload="metadata"
+                />
+              ) : (
+                <img
+                  key={siteMedia.url}
+                  src={siteMedia.url}
+                  alt={`ภาพพื้นที่ติดตั้ง ${site.name}`}
+                  className="w-full h-full object-cover"
+                  draggable={false}
+                />
+              )
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center gap-2 px-4">
+                <Video className="w-8 h-8 text-slate-700" />
+                <div className="text-xs text-slate-400 font-medium">ยังไม่มีวิดีโอของไซต์นี้</div>
+                <p className="text-[10px] text-slate-500 leading-snug max-w-[15rem]">
+                  วางไฟล์ไว้ใน <span className="font-mono text-slate-400">public/site/</span> แล้วเพิ่ม 1 บรรทัดใน{' '}
+                  <span className="font-mono text-slate-400">siteMedia.ts</span> ตามรหัสไซต์{' '}
+                  <span className="font-mono text-slate-400">{site.code}</span>
+                </p>
+              </div>
             )}
-          </div>
 
-          {/* Device-level telemetry needs the DEVICE_DATA scope and per-inverter
-              endpoints; this dashboard reads site-level figures only. Showing
-              the mock inverters here put four invented serial numbers, string
-              voltages and currents on screen underneath live production —
-              the most convincing fabrication on the whole page. */}
-          {isLive && (
-            <div className="flex-1 flex flex-col items-center justify-center text-center gap-2 py-8">
-              <Cpu className="w-8 h-8 text-slate-700" />
-              <div className="text-xs text-slate-400 font-medium">ไม่มีข้อมูลระดับอุปกรณ์</div>
-              <p className="text-[10px] text-slate-500 leading-snug max-w-[15rem]">
-                ข้อมูลรายอินเวอร์เตอร์และ PV String ต้องใช้สิทธิ์ <span className="font-mono text-slate-400">DEVICE_DATA</span>{' '}
-                ซึ่งยังไม่ได้เปิดใช้ — ตอนนี้ดึงเฉพาะข้อมูลระดับไซต์
-              </p>
+            {/* Keeps the caption legible over a bright frame. */}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-slate-950/90 to-transparent" />
+            <div className="pointer-events-none absolute bottom-1.5 left-2.5 text-[10px] font-mono text-slate-300">
+              {site.code}
             </div>
-          )}
-
-          {/* Inverter Selector Tabs */}
-          {!isLive && (
-          <div className="flex items-center gap-1 overflow-x-auto pb-1">
-            {site.inverters.map((inv, idx) => (
-              <button
-                key={inv.id}
-                onClick={() => setActiveInverterTab(idx)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all shrink-0 cursor-pointer ${
-                  activeInverterTab === idx
-                    ? 'bg-amber-500/30 text-amber-200 border border-amber-400'
-                    : 'bg-slate-900/80 text-slate-400 hover:text-slate-200 border border-slate-800'
-                }`}
-              >
-                {inv.id}
-              </button>
-            ))}
           </div>
-          )}
-
-          {/* Active Inverter Telemetry Details */}
-          {!isLive && selectedInverter && (
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-sky-500/20 flex flex-col gap-2.5">
-              <div className="flex items-center justify-between text-xs pb-1 border-b border-slate-800">
-                <span className="text-slate-300 font-semibold">{selectedInverter.model}</span>
-                <span className="text-sky-300 font-mono">{selectedInverter.efficiency}% Eff</span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div className="bg-slate-950/60 p-2 rounded-lg border border-slate-800">
-                  <div className="text-[10px] text-slate-400">กำลังผลิตปัจจุบัน</div>
-                  <div className="font-bold font-mono text-amber-300 mt-0.5">
-                    {selectedInverter.powerKw} / {selectedInverter.maxPowerKw} kW
-                  </div>
-                </div>
-
-                <div className="bg-slate-950/60 p-2 rounded-lg border border-slate-800">
-                  <div className="text-[10px] text-slate-400">อุณหภูมิอินเวอร์เตอร์</div>
-                  <div className="font-bold font-mono text-slate-200 mt-0.5 flex items-center gap-1">
-                    <Thermometer className="w-3.5 h-3.5 text-amber-400" />
-                    <span>{selectedInverter.temperatureC}°C</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* String Currents & Voltages */}
-              <div>
-                <div className="text-[11px] font-semibold text-slate-300 mb-1.5 flex items-center justify-between">
-                  <span>PV Strings ({selectedInverter.strings.length} สตริง)</span>
-                  <span className="text-[10px] text-slate-400 font-mono">แรงดัน/กระแส</span>
-                </div>
-
-                <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
-                  {selectedInverter.strings.map((str) => (
-                    <div
-                      key={str.stringId}
-                      className="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/80 border border-slate-800/80 text-[11px] font-mono"
-                    >
-                      <span className="text-sky-300 font-bold">{str.stringId}</span>
-                      <div className="flex items-center gap-2 text-slate-300">
-                        <span>{str.voltageV} V</span>
-                        <span className="text-slate-600">|</span>
-                        <span>{str.currentA} A</span>
-                        <span className="text-slate-600">|</span>
-                        <span className="text-amber-300 font-bold">{(str.powerW / 1000).toFixed(2)} kW</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Action Button: Open Binding Settings */}
           <button
