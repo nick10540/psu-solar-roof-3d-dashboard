@@ -383,20 +383,16 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
               <span className="text-xs font-normal text-blue-300/80">kWp</span>
             )}
           </div>
-          <div className="text-[10px] text-slate-400 mt-1 flex items-center justify-between gap-2">
-            {/* Panel count is not in the API — showing the hand-entered figure
-                next to a live capacity would imply it was measured too, and
-                showing it beside an em-dash would imply the site is reporting.
-                The provenance line below carries the state in both cases. */}
-            <span className="truncate">
-              {isSimulated ? `${site.panelCount} แผง PV (จำลอง)` : ''}
-            </span>
-            <button
-              onClick={() => onOpenBindingModal(site)}
-              className="text-amber-300 font-bold underline hover:text-amber-200 cursor-pointer shrink-0"
-            >
-              ตั้งค่า SolarEdge API
-            </button>
+          {/* Panel count is not in the API — showing the hand-entered figure
+              next to a live capacity would imply it was measured too, and
+              showing it beside an em-dash would imply the site is reporting.
+              The provenance line below carries the state in both cases.
+
+              The "ตั้งค่า SolarEdge API" link that used to sit here is gone:
+              it opened the same binding modal as the full-width button at the
+              bottom of this page, two calls to action for one job. */}
+          <div className="text-[10px] text-slate-400 mt-1 truncate">
+            {isSimulated ? `${site.panelCount} แผง PV (จำลอง)` : ''}
           </div>
           <SourceCaption metrics={metrics} liveLabel="จาก SolarEdge API" />
         </div>
@@ -416,15 +412,19 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                   or it reads as data. The badge used to render only on a live
                   page, which left an unbound site drawing a simulated curve
                   with nothing on screen saying so. */}
-              <span
-                className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
-                  isMeasuredRange
-                    ? 'text-emerald-300 bg-emerald-950/50 border-emerald-600/40'
-                    : 'text-amber-300 bg-amber-950/50 border-amber-600/40'
-                }`}
-              >
-                {isMeasuredRange ? 'วัดจริง' : 'จำลอง'}
-              </span>
+              {/* No badge when there is no chart — "จำลอง" over an empty panel
+                  would describe a curve that is not being drawn. */}
+              {!hasNoData && (
+                <span
+                  className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                    isMeasuredRange
+                      ? 'text-emerald-300 bg-emerald-950/50 border-emerald-600/40'
+                      : 'text-amber-300 bg-amber-950/50 border-amber-600/40'
+                  }`}
+                >
+                  {isMeasuredRange ? 'วัดจริง' : 'จำลอง'}
+                </span>
+              )}
             </div>
 
             {/* Time Range Pills */}
@@ -445,20 +445,23 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             </div>
           </div>
 
-          {/* Nothing behind this pin: the curve below is a shared simulation
-              scaled by capacity, so say it in words rather than leaving a small
-              badge to carry it on a screen people read from across a room. */}
-          {hasNoData && (
-            <div className="flex items-start gap-2 bg-amber-950/40 border border-amber-700/40 rounded-xl px-2.5 py-2">
-              <WifiOff className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
-              <div className="text-[10px] text-amber-200/90 leading-snug">
-                <span className="font-bold">{noDataHeadline(metrics)}</span>{' — '}
-                กราฟและตัวเลขด้านล่างเป็นค่าจำลอง ไม่ใช่ค่าที่วัดได้จากไซต์นี้
-              </div>
+          {/* A site with nothing behind it draws no curve at all.
+              Labelling a simulated curve "จำลอง" was not enough: from across a
+              room the shape still reads as this site's own output, and the
+              dashboard is in API mode precisely because someone wants measured
+              figures. Blank is the honest answer. Mock mode is unaffected —
+              there `hasData` is true and the simulation is the point. */}
+          {hasNoData ? (
+            <div className="w-full h-64 sm:h-72 flex flex-col items-center justify-center gap-2 text-center rounded-xl border border-slate-800 bg-slate-950/40">
+              <WifiOff className="w-8 h-8 text-slate-700" />
+              <div className="text-sm font-bold text-slate-400">{noDataHeadline(metrics)}</div>
+              <div className="text-4xl font-mono font-black text-slate-700 leading-none">{NO_DATA}</div>
+              <p className="text-[10px] text-slate-500 leading-snug max-w-[18rem]">
+                ผูกไซต์นี้กับ SolarEdge Site ID ด้วยปุ่มด้านล่าง จึงจะแสดงกราฟการผลิตจริง
+              </p>
             </div>
-          )}
-
-          {/* SVG Area Chart */}
+          ) : (
+          /* SVG Area Chart */
           <div className="w-full relative h-64 sm:h-72">
             <svg 
               viewBox={`0 0 ${chartWidth} ${chartHeight}`} 
@@ -571,6 +574,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
               </div>
             )}
           </div>
+          )}
 
           {/* Environmental Yield for this site */}
           <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-xs">
