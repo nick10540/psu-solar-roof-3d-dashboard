@@ -79,7 +79,7 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
       {/* Header: name the data source, so nobody has to guess what they are looking at */}
       <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-slate-700/60">
         <span className="text-[11px] font-bold text-amber-300 tracking-wide">
-          ผลผลิตรวม {sitesWithData}/{siteCount} ไซต์
+          ผลผลิตรวม {siteCount} วิทยาเขต
         </span>
         <span
           className={`text-[8.5px] font-mono px-1.5 py-0.5 rounded border font-bold flex items-center gap-1 ${

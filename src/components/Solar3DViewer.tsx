@@ -46,11 +46,10 @@ import {
   ORBIT_DEG_PER_SEC,
   CAMERA_BADGE_THROTTLE_MS,
 } from '../config/mapConfig';
-import { MARKER_FONT_SIZES } from '../config/markerTypography';
+import { MARKER_FONT_SIZES, MARKER_CARD } from '../config/markerTypography';
+import { resolveSiteMedia } from '../config/siteMedia';
 import {
   RotateCcw,
-  Camera,
-  Compass,
   Satellite,
   Layers,
   Sliders,
@@ -97,13 +96,19 @@ interface MarkerHandle {
   statusDot: HTMLElement;
   statusText: HTMLElement;
   pinIdEl: HTMLElement;
+  /** The site's looping clip, when it has one. Governed by `useMediaPlayback`. */
+  videoEl: HTMLVideoElement | null;
   lng: number;
   lat: number;
   onClick: (e: MouseEvent) => void;
 }
 
+/**
+ * `overflow-hidden` + no padding: the media banner is full-bleed to the card's
+ * rounded corners, so the padding moved inward onto the content wrapper.
+ */
 const CARD_BASE =
-  'glass-panel-static px-3 py-2.5 rounded-xl shadow-2xl border text-white min-w-[230px] cursor-pointer transition-colors duration-200';
+  'glass-panel-static rounded-xl shadow-2xl border text-white cursor-pointer transition-colors duration-200 overflow-hidden';
 const CARD_SELECTED = 'border-amber-400/90 bg-slate-900/95 ring-2 ring-amber-400/50';
 const CARD_IDLE = 'border-sky-400/60 bg-slate-950/90 hover:border-sky-300';
 
@@ -142,61 +147,81 @@ function createMarkerElement(site: BuildingInfo): {
 } {
   const el = document.createElement('div');
   el.className = 'maplibre-mea-marker select-none';
-  el.style.width = '250px';
+  el.style.width = `${MARKER_CARD.widthPx}px`;
   el.style.transform = 'translate(-50%, -100%)';
   el.id = `maplibre-marker-site-${site.id}`;
+
+  // Banner is omitted entirely when the site has no file, rather than left as
+  // an empty box. Nothing here interpolates site-supplied text - names reach
+  // the DOM through textContent in patchMarker - so this stays injection-safe.
+  const media = resolveSiteMedia(site.code);
+  const mediaHtml = media
+    ? `<div data-mea="mediaWrap" class="relative w-full bg-slate-900 overflow-hidden border-b border-sky-500/25" style="height:${MARKER_CARD.mediaHeightPx}px">
+         ${
+           media.kind === 'video'
+             ? `<video data-mea="mediaEl" class="w-full h-full object-cover" src="${media.url}" autoplay loop muted playsinline preload="metadata"></video>`
+             : `<img data-mea="mediaEl" class="w-full h-full object-cover" src="${media.url}" alt="" draggable="false" />`
+         }
+         <!-- Keeps the header below readable against a bright frame. -->
+         <div class="absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-slate-950/90 to-transparent pointer-events-none"></div>
+       </div>`
+    : '';
 
   el.innerHTML = `
     <div data-mea="inner" class="relative flex flex-col items-center group">
       <!-- 1. Floating 3D Telemetry HUD Card -->
       <div data-mea="cardWrap" class="mb-1" style="pointer-events: auto;">
         <div data-mea="card" class="${CARD_BASE} ${CARD_IDLE}">
-          <!-- Header: Site Name & Code -->
-          <div class="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-slate-700/60">
-            <div class="flex items-center gap-1.5">
-              <span data-mea="headerDot" class="w-2 h-2 rounded-full bg-sky-400 mea-live-dot"></span>
-              <span data-mea="name" class="font-bold tracking-wide text-amber-300 font-['Prompt',sans-serif]" style="font-size:${MARKER_FONT_SIZES.title}px"></span>
-            </div>
-            <span data-mea="code" class="hidden font-mono text-sky-300 bg-sky-950/90 px-1.5 py-0.5 rounded border border-sky-600/40 font-bold" style="font-size:${MARKER_FONT_SIZES.code}px"></span>
-          </div>
+          <!-- Site photo / looping clip -->
+          ${mediaHtml}
 
-          <!-- 3 Metrics Grid -->
-          <div class="grid grid-cols-3 gap-1.5 text-center text-slate-200 py-1">
-            <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
-              <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังผลิต</div>
-              <div class="font-bold font-mono text-amber-300 flex items-center justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
-                <span class="text-amber-400" style="font-size:${MARKER_FONT_SIZES.metricIcon}px">⚡</span>
-                <span data-mea="power">0.0</span>
-                <span class="text-amber-400/80 font-normal ml-0.5" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kW</span>
+          <div class="px-3 py-2.5">
+            <!-- Header: Site Name & Code -->
+            <div class="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-slate-700/60">
+              <div class="flex items-center gap-1.5">
+                <span data-mea="headerDot" class="w-2 h-2 rounded-full bg-sky-400 mea-live-dot"></span>
+                <span data-mea="name" class="font-bold tracking-wide text-amber-300 font-['Prompt',sans-serif]" style="font-size:${MARKER_FONT_SIZES.title}px"></span>
+              </div>
+              <span data-mea="code" class="hidden font-mono text-sky-300 bg-sky-950/90 px-1.5 py-0.5 rounded border border-sky-600/40 font-bold" style="font-size:${MARKER_FONT_SIZES.code}px"></span>
+            </div>
+
+            <!-- 3 Metrics Grid -->
+            <div class="grid grid-cols-3 gap-1.5 text-center text-slate-200 py-1">
+              <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังผลิต</div>
+                <div class="font-bold font-mono text-amber-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                  <span data-mea="power">0.0</span>
+                  <span class="text-amber-400/80 font-normal" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kW</span>
+                </div>
+              </div>
+
+              <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">พลังงานรวม</div>
+                <div class="font-bold font-mono text-emerald-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                  <span data-mea="energyVal">0</span>
+                  <span data-mea="energyUnit" class="text-emerald-400/80 font-normal" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWh</span>
+                </div>
+              </div>
+
+              <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
+                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังติดตั้ง</div>
+                <div class="font-bold font-mono text-sky-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                  <span data-mea="capacity">0</span>
+                  <span class="text-sky-400/80 font-normal" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWp</span>
+                </div>
               </div>
             </div>
 
-            <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
-              <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">พลังงานรวม</div>
-              <div class="font-bold font-mono text-emerald-300 flex items-center justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
-                <span data-mea="energyVal">0</span>
-                <span data-mea="energyUnit" class="text-emerald-400/80 font-normal ml-0.5" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWh</span>
-              </div>
+            <!-- Action Link to Sub-page -->
+            <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-slate-300" style="font-size:${MARKER_FONT_SIZES.statusRow}px">
+              <span class="text-sky-300 flex items-center gap-1 font-mono" style="font-size:${MARKER_FONT_SIZES.statusText}px">
+                <span data-mea="statusDot" class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+                <span data-mea="statusText">SolarEdge Ready</span>
+              </span>
+              <span class="text-amber-300 font-bold flex items-center gap-0.5 hover:underline" style="font-size:${MARKER_FONT_SIZES.actionLink}px">
+                ดูหน้าย่อยไซต์ ➔
+              </span>
             </div>
-
-            <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
-              <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังติดตั้ง</div>
-              <div class="font-bold font-mono text-sky-300 flex items-center justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
-                <span data-mea="capacity">0</span>
-                <span class="text-sky-400/80 font-normal ml-0.5" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWp</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Action Link to Sub-page -->
-          <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-slate-300" style="font-size:${MARKER_FONT_SIZES.statusRow}px">
-            <span class="text-sky-300 flex items-center gap-1 font-mono" style="font-size:${MARKER_FONT_SIZES.statusText}px">
-              <span data-mea="statusDot" class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
-              <span data-mea="statusText">SolarEdge Ready</span>
-            </span>
-            <span class="text-amber-300 font-bold flex items-center gap-0.5 hover:underline" style="font-size:${MARKER_FONT_SIZES.actionLink}px">
-              ดูหน้าย่อยไซต์ ➔
-            </span>
           </div>
         </div>
         <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-sky-400/80 mx-auto -mt-[1px]"></div>
@@ -216,6 +241,23 @@ function createMarkerElement(site: BuildingInfo): {
   const pick = (key: string): HTMLElement =>
     el.querySelector<HTMLElement>(`[data-mea="${key}"]`) as HTMLElement;
 
+  const mediaEl = el.querySelector<HTMLElement>('[data-mea="mediaEl"]');
+  if (mediaEl) {
+    // A missing or undecodable file drops the whole banner rather than leaving
+    // a black rectangle above the numbers. `once` + a node that is discarded
+    // with the marker means there is nothing to unregister in the teardown.
+    mediaEl.addEventListener(
+      'error',
+      () => el.querySelector('[data-mea="mediaWrap"]')?.remove(),
+      { once: true }
+    );
+  }
+
+  const videoEl = mediaEl instanceof HTMLVideoElement ? mediaEl : null;
+  // Browsers only grant autoplay to muted video, and the `muted` attribute is
+  // unreliable on a node parsed out of innerHTML - set the property as well.
+  if (videoEl) videoEl.muted = true;
+
   return {
     el,
     refs: {
@@ -232,6 +274,7 @@ function createMarkerElement(site: BuildingInfo): {
       statusDot: pick('statusDot'),
       statusText: pick('statusText'),
       pinIdEl: pick('pinId'),
+      videoEl,
     },
   };
 }
@@ -594,20 +637,6 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
   // -------------------------------------------------------------------------
   // Camera controls
   // -------------------------------------------------------------------------
-  const handleResetGoogleEarthPerspective = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    handlersRef.current.onSelectBuilding(null);
-    map.flyTo({
-      center: REGIONAL_CENTER,
-      zoom: DEFAULT_ZOOM,
-      pitch: DEFAULT_PITCH,
-      bearing: DEFAULT_BEARING,
-      essential: true,
-      duration: 1800,
-    });
-  }, []);
-
   const handleSetPitchPreset = useCallback((pitchVal: number) => {
     mapRef.current?.easeTo({ pitch: Math.min(pitchVal, MAX_PITCH), duration: 800 });
   }, []);
@@ -723,6 +752,38 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     // The expensive part - innerHTML parsing and Marker construction - happens
     // once per site id, not once per tick.
   }, [isMapCreated, buildings, metricsById, selectedBuildingId, showPinCards]);
+
+  // -------------------------------------------------------------------------
+  // Site clip playback governor
+  //
+  // Hiding the pin cards only sets `opacity-0` - the markers stay in the DOM,
+  // so without this every clip would keep decoding behind an invisible card.
+  // Four video decoders running unwatched for ten hours is exactly the kind of
+  // cost this screen cannot afford, so playback is tied to whether the cards
+  // are actually on screen and the page is actually in the foreground.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isMapCreated) return;
+
+    const applyPlaybackState = () => {
+      const shouldPlay = showPinCards && !document.hidden;
+      markersRef.current.forEach(({ videoEl }) => {
+        if (!videoEl) return;
+        if (shouldPlay) {
+          // Rejected when the browser withholds autoplay; the poster frame
+          // stays up and there is nothing useful to do about it.
+          void videoEl.play().catch(() => {});
+        } else {
+          videoEl.pause();
+        }
+      });
+    };
+
+    applyPlaybackState();
+    document.addEventListener('visibilitychange', applyPlaybackState);
+    return () => document.removeEventListener('visibilitychange', applyPlaybackState);
+    // `buildings` is here so clips on newly-created markers get governed too.
+  }, [isMapCreated, showPinCards, buildings]);
 
   // -------------------------------------------------------------------------
   // Render
@@ -841,16 +902,6 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       {/* 3. Top-Right: 3D Camera Angles, Tilt Presets & Auto Orbit */}
       <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2 pointer-events-auto">
         <div className="flex items-center gap-1.5">
-          <button
-            onClick={handleResetGoogleEarthPerspective}
-            className="glass-panel px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 border border-sky-500/30 hover:bg-sky-900/50 text-sky-200 transition-all cursor-pointer shadow-xl backdrop-blur-md"
-            title="รีเซ็ตมุมมอง Google Earth 3D (เฉียง 60 องศา)"
-          >
-            <Camera className="w-3.5 h-3.5 text-sky-400" />
-            <span className="text-[11px] font-medium hidden sm:inline">มุมมองเฉียง 3D (Google Earth)</span>
-            <span className="text-[11px] font-medium sm:hidden">3D เฉียง</span>
-          </button>
-
           <button
             onClick={handleToggleAutoOrbit}
             className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xl backdrop-blur-md ${
@@ -971,15 +1022,6 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
         <RegionalTotalsPanel totals={totals} />
       </div>
 
-      {/* 5. Bottom-Left: Google Earth 3D Interaction Guide */}
-      <div className="absolute bottom-3 left-3 z-20 pointer-events-none hidden md:flex items-center gap-2">
-        <div className="glass-panel px-3 py-1.5 rounded-xl text-[10px] text-slate-300 border border-sky-500/20 shadow-xl flex items-center gap-2 backdrop-blur-md">
-          <Compass className="w-3.5 h-3.5 text-sky-400" />
-          <span>
-            <strong>ภาพถ่ายดาวเทียมจริง 3D</strong> • คลิกขวาลาก / กด Ctrl+ลาก: ปรับมุมเฉียงและหมุน 360° • คลิกซ้ายลาก: เลื่อนแผนที่ • หมุนลูกกลิ้ง: ซูมเข้า/ออก
-          </span>
-        </div>
-      </div>
     </div>
   );
 };
