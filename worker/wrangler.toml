@@ -1,0 +1,14 @@
+name = "psu-solar-solaredge-backend"
+main = "worker.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Secrets — set with `wrangler secret put <NAME>`, never in this file:
+#   SOLAREDGE_CLIENT_ID
+#   SOLAREDGE_CLIENT_SECRET
+
+[vars]
+SOLAREDGE_TOKEN_URL = "https://monitoringapi.solaredge.com/v2/oauth2/token"
+SOLAREDGE_API_BASE = "https://monitoringapi.solaredge.com/v2"
+SOLAREDGE_SITE_IDS = "4956359,4821237,4947126"
+ALLOWED_ORIGINS = "http://localhost:3000"

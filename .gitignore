@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Backend secrets (SolarEdge OAuth client credentials)
+worker/.dev.vars
+worker/.env
+!worker/.dev.vars.example
+worker/.token-store.json
+
+# Legacy stray credential filenames — these are NOT matched by the .env* rule.
+solar.env
+solarenv.txt
+*.env
+!.env.example

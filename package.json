@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
+    "worker": "tsx watch worker/node-server.ts",
+    "worker:start": "tsx worker/node-server.ts",
+    "dev:all": "concurrently -n backend,frontend -c cyan,green \"npm:worker\" \"npm:dev\"",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && tsc --noEmit -p worker/tsconfig.json"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -33,6 +36,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.2",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",

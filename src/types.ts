@@ -167,11 +167,51 @@ export interface SolarEdgeQuotaInfo {
   lastFetchTimestamp: number | null;
   lastFetchTimeString: string | null;
   isCacheActive: boolean;
+  /**
+   * Calls the backend actually made to SolarEdge today, as reported by the
+   * backend itself. The browser counts its own requests to /api/solaredge,
+   * which is a different (smaller) number — one browser poll fans out to one
+   * upstream call per site. Null when the backend has not answered yet.
+   */
+  upstreamCallsToday?: number | null;
+}
+
+/** Authorization state of one SolarEdge site, as reported by the backend. */
+export interface SolarEdgeSiteAuthStatus {
+  siteId: number;
+  name: string;
+  authorized: boolean;
+  /** Seconds left on this site's cached access token (2 h when fresh). */
+  accessTokenTtlSec: number | null;
+}
+
+/**
+ * Backend connection state, replacing the old client-side API key.
+ *
+ * Credentials moved server-side with the switch to SolarEdge Connect: the
+ * browser holds nothing secret, so the only thing left to configure here is
+ * live-vs-mock, plus kicking off the consent flow.
+ *
+ * A SolarEdge grant covers ONE site, so authorization is tracked per site
+ * rather than as a single account-wide flag.
+ */
+export interface SolarEdgeBackendStatus {
+  reachable: boolean;
+  /** Site IDs the backend is configured to read. */
+  siteIds: number[];
+  /** Per-site authorization state. Empty until /health has answered. */
+  sites: SolarEdgeSiteAuthStatus[];
+  authorizedCount: number;
+  totalSites: number;
+  /** Per-site upstream failures from the last fetch. */
+  siteErrors: Array<{ siteId: number; message: string; needsAuthorization?: boolean }>;
+  /** Set when the backend served its last good data through an outage. */
+  staleReason: string | null;
+  message: string | null;
 }
 
 export interface SolarEdgeConfig {
   isConnected: boolean;
-  apiKey: string;
   siteId: string; // default active site
   useMock: boolean;
   lastSyncTime: string;

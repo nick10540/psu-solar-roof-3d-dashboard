@@ -41,7 +41,6 @@ export function totalInstalledKwp(sites: Array<{ capacityKwp: number }>): number
 
 export const INITIAL_SOLAREDGE_CONFIG: SolarEdgeConfig = {
   isConnected: false,
-  apiKey: '',
   siteId: 'MEA-SOLAR-2026',
   useMock: true,
   lastSyncTime: '21 ส.ค. 2569 10:30:00',

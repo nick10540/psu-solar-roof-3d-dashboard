@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# SolarEdge OAuth backend (worker/).
+#
+# This container exists because SolarEdge retired `?api_key=` in favour of an
+# OAuth2 client id / secret — a credential that cannot ship in a browser
+# bundle. It holds the secret, mints and refreshes the access token, and is the
+# only thing here that ever talks to SolarEdge.
+# ---------------------------------------------------------------------------
+
+# --- Build: bundle the TypeScript sources into one plain JS file -----------
+# The backend imports nothing but node: builtins, so esbuild collapses it into
+# a single file and the runtime image needs no node_modules at all.
+FROM node:20-alpine AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY worker ./worker
+RUN npx esbuild worker/node-server.ts \
+      --bundle \
+      --platform=node \
+      --target=node20 \
+      --format=esm \
+      --outfile=/app/server.mjs
+
+# --- Serve -----------------------------------------------------------------
+FROM node:20-alpine AS serve
+WORKDIR /app
+
+COPY --from=build /app/server.mjs ./server.mjs
+
+# Rotated refresh tokens live on a mounted volume, NOT next to the bundle:
+# `docker compose up --build` replaces the image, and losing the current token
+# means redoing the SolarEdge consent flow by hand.
+RUN mkdir -p /data && chown -R node:node /app /data
+USER node
+
+ENV PORT=8787
+ENV SOLAREDGE_TOKEN_STORE=/data/token-store.json
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:8787/api/solaredge/health || exit 1
+
+CMD ["node", "server.mjs"]

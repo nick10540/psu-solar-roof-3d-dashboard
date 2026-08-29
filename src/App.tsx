@@ -39,6 +39,7 @@ import {
   SolarEdgeTransformedOverview,
   SolarEdgeQuotaInfo,
   BuildingSiteBinding,
+  SolarEdgeBackendStatus,
   AppNavigationMode
 } from './types';
 import {
@@ -57,7 +58,9 @@ import {
   loadBuildingSiteBindings,
   saveBuildingSiteBinding,
   getDailyQuotaInfo,
-  MOCK_SOLAREDGE_SITES
+  MOCK_SOLAREDGE_SITES,
+  fetchBackendHealth,
+  exchangeAuthorizationCode
 } from './services/solarEdgeService';
 import {
   saveBuildingCoords,
@@ -118,6 +121,12 @@ export default function App() {
   const [bindings, setBindings] = useState<Record<number, BuildingSiteBinding>>(loadBuildingSiteBindings);
   const [isSolarEdgeLoading, setIsSolarEdgeLoading] = useState<boolean>(false);
 
+  // Backend / OAuth diagnostics. With credentials server-side there is nothing
+  // for the operator to type any more, so the settings modal shows the state of
+  // the connection instead of a key field.
+  const [backendStatus, setBackendStatus] = useState<SolarEdgeBackendStatus | null>(null);
+  const [solarEdgeError, setSolarEdgeError] = useState<string | null>(null);
+
   // Time & Chart States
   const [timeRange] = useState<TimeRange>('day');
   const [timeOfDayHour, setTimeOfDayHour] = useState<number>(10.5); // 10:30 AM
@@ -170,7 +179,9 @@ export default function App() {
       if (!silent) setIsSolarEdgeLoading(true);
 
       try {
-        const res = await fetchSolarEdgeAccountData(config.apiKey, {
+        // No credential argument: the OAuth client id / secret live in worker/
+        // and never reach the browser. This call goes to /api/solaredge.
+        const res = await fetchSolarEdgeAccountData({
           forceRefresh,
           useMock: config.useMock,
           signal: controller.signal,
@@ -222,6 +233,10 @@ export default function App() {
           setSolarEdgeSites(res.sites);
           setSolarEdgeOverviews(res.overviews);
           setQuotaInfo(res.quota);
+          // Null in mock mode and on a cache hit — keep the last known backend
+          // state rather than blanking the settings panel on every cached tick.
+          if (res.backend) setBackendStatus(res.backend);
+          setSolarEdgeError(res.error ?? null);
           if (aggregated) setOverview((prev) => ({ ...prev, ...aggregated }));
         };
 
@@ -239,7 +254,7 @@ export default function App() {
         if (!silent && mountedRef.current) setIsSolarEdgeLoading(false);
       }
     },
-    [config.apiKey, config.useMock]
+    [config.useMock]
   );
 
   // Load SolarEdge Data on Mount & Config change.
@@ -253,6 +268,82 @@ export default function App() {
     pendingForceRefreshRef.current = false;
     loadSolarEdgeData({ forceRefresh: force });
   }, [loadSolarEdgeData]);
+
+  /**
+   * Probe the backend for its own diagnostics (token TTL, configured sites).
+   *
+   * Called from the authorization callback below, when the settings modal
+   * opens, and from its "ตรวจสอบ backend" button — never on the 5-minute poll:
+   * the poll needs data, not diagnostics.
+   */
+  const handleCheckBackend = useCallback(async () => {
+    const status = await fetchBackendHealth();
+    if (mountedRef.current) setBackendStatus(status);
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // 1b. SolarEdge Connect callback
+  //
+  // SolarEdge returns the operator to the app's DEFAULT Redirect URL — this
+  // dashboard's own origin — carrying `?code=…&site_id=…`. A grant covers ONE
+  // site, so `site_id` says which one was just authorized and the backend keys
+  // the tokens by it. Handing the code straight over makes the whole setup
+  // "click Approve"; no terminal step.
+  //
+  // Runs on mount and strips both params from the address bar immediately: an
+  // authorization code is single-use, and leaving it in history or in a
+  // screenshot of the kiosk helps nobody.
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const siteIdRaw = params.get('site_id');
+    if (!code) return;
+
+    params.delete('code');
+    params.delete('site_id');
+    params.delete('external_id');
+    params.delete('state');
+    const cleaned = params.toString();
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}${cleaned ? `?${cleaned}` : ''}`
+    );
+
+    const siteId = Number(siteIdRaw);
+    if (!siteIdRaw || !Number.isFinite(siteId)) {
+      // Without site_id there is nothing to key the grant to, and guessing
+      // would attach it to the wrong site.
+      setSolarEdgeError('SolarEdge ไม่ได้ส่ง site_id กลับมา — ลองกดเชื่อมต่อใหม่อีกครั้ง');
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    let cancelled = false;
+    void exchangeAuthorizationCode(code, siteId).then((result) => {
+      if (cancelled || !mountedRef.current) return;
+
+      if (result.ok) {
+        setSolarEdgeError(null);
+        // Switch to live data and refresh at once rather than leaving the
+        // operator on mock figures wondering whether it worked.
+        setConfig((prev) => ({ ...prev, useMock: false, isConnected: true }));
+        void handleCheckBackend();
+        // More sites still to authorize — keep the panel open so the next
+        // "เชื่อมต่อ" button is right there.
+        if (result.pendingSiteIds.length > 0) setIsSettingsOpen(true);
+      } else {
+        setSolarEdgeError(result.message);
+        setIsSettingsOpen(true); // surface the failure where it can be acted on
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---------------------------------------------------------------------------
   // 2. Auto-polling every 5 minutes (background, no UI disruption)
@@ -473,8 +564,12 @@ export default function App() {
   const handleOpenAddModal = useCallback(() => setIsAddBuildingModalOpen(true), []);
   const handleOpenDeleteDialog = useCallback((bld: BuildingInfo) => setDeleteCandidateBuilding(bld), []);
   const handleToggleLiveSimulation = useCallback(() => setIsLiveSimulation((v) => !v), []);
-  const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), []);
   const handleCloseSettings = useCallback(() => setIsSettingsOpen(false), []);
+
+  const handleOpenSettings = useCallback(() => {
+    setIsSettingsOpen(true);
+    if (!config.useMock) void handleCheckBackend();
+  }, [config.useMock, handleCheckBackend]);
 
   const handleManualRefresh = useCallback(() => {
     handleTimeOfDayChange(timeOfDayHour);
@@ -483,12 +578,14 @@ export default function App() {
 
   const handleSaveConfig = useCallback(
     (newCfg: SolarEdgeConfig) => {
-      const sourceChanged = config.apiKey !== newCfg.apiKey || config.useMock !== newCfg.useMock;
+      // Live-vs-mock is now the only setting that changes where data comes
+      // from; the API key it used to share this check with moved to worker/.
+      const sourceChanged = config.useMock !== newCfg.useMock;
       setConfig(newCfg);
 
       if (sourceChanged) {
-        // loadSolarEdgeData is about to be re-created with the new credentials;
-        // let its effect do the fetch so the request carries the new key.
+        // loadSolarEdgeData is about to be re-created for the new mode; let its
+        // effect do the fetch so the request runs against the mode just saved.
         pendingForceRefreshRef.current = true;
       } else {
         // Same data source (e.g. only the interval changed) — the effect will
@@ -496,7 +593,7 @@ export default function App() {
         loadSolarEdgeData({ forceRefresh: true });
       }
     },
-    [config.apiKey, config.useMock, loadSolarEdgeData]
+    [config.useMock, loadSolarEdgeData]
   );
 
   const activeBinding = selectedBuilding ? bindings[selectedBuilding.id] : undefined;
@@ -619,8 +716,11 @@ export default function App() {
           bindings={bindings}
           buildings={buildings}
           isLoading={isSolarEdgeLoading}
+          backendStatus={backendStatus}
+          lastError={solarEdgeError}
           onSaveConfig={handleSaveConfig}
           onForceRefresh={() => loadSolarEdgeData({ forceRefresh: true })}
+          onCheckBackend={handleCheckBackend}
           onUnbindBuilding={handleUnbindBuilding}
           onClose={handleCloseSettings}
         />
