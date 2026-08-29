@@ -25,12 +25,11 @@ import {
   treesFromKwh,
   formatNumber,
 } from '../utils/energyEquivalents';
+import { NO_DATA } from './metricDisplay';
 
 interface RegionalTotalsPanelProps {
   totals: RegionalTotals;
 }
-
-const NO_DATA = '—';
 
 /** Format a metric, or the em-dash placeholder when there is nothing to show. */
 function fmt(value: MetricValue, decimals = 0): string {

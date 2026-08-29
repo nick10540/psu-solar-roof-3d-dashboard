@@ -67,10 +67,15 @@ export function dataSourceModeFromConfig(useMock: boolean): DataSourceMode {
   return useMock ? 'mock' : 'live';
 }
 
-function emptyMetrics(
+/**
+ * A pin with nothing behind it. Exported because every display surface needs
+ * the same shape for "no data" - the map, the site sub-page, and anything added
+ * later - and a second hand-written copy is how the fallbacks crept back in.
+ */
+export function emptySiteMetrics(
   buildingId: number,
-  siteId: number | null,
-  isBound: boolean
+  siteId: number | null = null,
+  isBound = false
 ): ResolvedSiteMetrics {
   return {
     buildingId,
@@ -106,7 +111,7 @@ export function resolveSiteMetrics(
   if (mode === 'live') {
     // No mapping, no reading, or a simulated payload -> nothing to show.
     if (!overview || overview.isMockData) {
-      return emptyMetrics(building.id, siteId, isBound);
+      return emptySiteMetrics(building.id, siteId, isBound);
     }
 
     return {

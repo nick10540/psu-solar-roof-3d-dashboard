@@ -30,7 +30,8 @@ import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { BuildingInfo } from '../types';
 import { RegionalTotalsPanel } from './RegionalTotalsPanel';
-import { ResolvedSiteMetrics, RegionalTotals } from '../services/siteMetricsService';
+import { ResolvedSiteMetrics, RegionalTotals, emptySiteMetrics } from '../services/siteMetricsService';
+import { NO_DATA } from './metricDisplay';
 import {
   buildUnifiedMapStyle,
   LAYER_VISIBILITY,
@@ -113,25 +114,6 @@ const CARD_BASE =
   'glass-panel-static rounded-xl shadow-2xl border text-white cursor-pointer transition-colors duration-200 overflow-hidden';
 const CARD_SELECTED = 'border-amber-400/90 bg-slate-900/95 ring-2 ring-amber-400/50';
 const CARD_IDLE = 'border-sky-400/60 bg-slate-950/90 hover:border-sky-300';
-
-/** Rendered wherever a metric is `null`. */
-const NO_DATA = '—';
-
-/** Defensive placeholder if a pin somehow has no resolved entry. */
-function emptySiteMetrics(buildingId: number): ResolvedSiteMetrics {
-  return {
-    buildingId,
-    siteId: null,
-    isBound: false,
-    hasData: false,
-    source: 'none',
-    currentPowerKw: null,
-    todayEnergyKwh: null,
-    lifetimeEnergyKwh: null,
-    capacityKwp: null,
-    lastUpdateTime: null,
-  };
-}
 
 function formatLifetime(kwh: number): { value: string; unit: string } {
   return kwh >= 10000
@@ -406,6 +388,9 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
   // States
   const [activeLayer, setActiveLayer] = useState<SatelliteLayerStyle>('esri-satellite');
   const [showPinCards, setShowPinCards] = useState<boolean>(true);
+
+  /** Control drawer held open by its grab handle, for pointers that cannot hover. */
+  const [isControlsPinned, setIsControlsPinned] = useState<boolean>(false);
   const [isAutoOrbit, setIsAutoOrbit] = useState<boolean>(false);
   const [camera, setCamera] = useState<{ pitch: number; bearing: number }>({
     pitch: DEFAULT_PITCH,
@@ -651,6 +636,22 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     map.easeTo({ pitch: nextPitch, duration: 400 });
   }, []);
 
+  /**
+   * Return the camera to the framing the dashboard opens on — the same values
+   * the map is built with, so "reset" cannot drift away from "initial".
+   */
+  const handleResetCamera = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({
+      center: REGIONAL_CENTER,
+      zoom: DEFAULT_ZOOM,
+      pitch: DEFAULT_PITCH,
+      bearing: DEFAULT_BEARING,
+      duration: 900,
+    });
+  }, []);
+
   // -------------------------------------------------------------------------
   // Auto orbit - requestAnimationFrame, not setInterval(50)
   // A 50 ms interval kept firing while the tab was hidden and drifted out of
@@ -808,214 +809,258 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
         </div>
       )}
 
-      {/* 2. Top-Left: Google Earth 3D Mode Badge & Layer Controls */}
-      <div className="absolute top-3 left-3 z-20 flex flex-col gap-2 pointer-events-auto">
-        {/* Real Satellite Layer Selector */}
-        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 shadow-2xl border border-sky-500/30 text-xs backdrop-blur-md">
-          <button
-            onClick={() => handleLayerChange('esri-satellite')}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
-              activeLayer === 'esri-satellite'
-                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-            }`}
-            title="ภาพถ่ายดาวเทียมจริงความละเอียดสูง (Esri World Imagery Real Satellite)"
-          >
-            <Satellite className="w-3.5 h-3.5 text-sky-400" />
-            <span className="text-[11px]">ดาวเทียมจริง</span>
-          </button>
+      {/* 2. Right-edge control drawer.
 
-          <button
-            onClick={() => handleLayerChange('hybrid')}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
-              activeLayer === 'hybrid'
-                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-            }`}
-            title="ดาวเทียมจริง + เส้นขอบเขตภูมิประเทศ (Hybrid)"
-          >
-            <Layers className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-[11px]">Hybrid</span>
-          </button>
+          Every map control used to live in two clusters pinned over the top
+          corners of the imagery. On a ceremony screen that is chrome sitting on
+          top of the thing people came to look at, so they are now one vertical
+          menu that stays off-screen until someone reaches for it — the same
+          hover-or-handle pattern as the header bar, mirrored to the right edge.
 
-          <button
-            onClick={() => handleLayerChange('dark')}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
-              activeLayer === 'dark'
-                ? 'bg-sky-500/40 text-white font-bold border border-sky-400 shadow-sm'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
-            }`}
-            title="แผนที่ Dark Cyber 3D"
-          >
-            <span className="text-xs">🌑</span>
-            <span className="text-[11px]">Dark 3D</span>
-          </button>
-        </div>
-
-        {/* Pin Telemetry Cards Toggle */}
+          pointer-events are off on the container and back on only for the handle
+          and the panel: a transparent full-height overlay across a live MapLibre
+          canvas would otherwise swallow every drag. */}
+      <div className="group pointer-events-none absolute inset-y-0 right-0 z-30 flex items-center justify-end">
+        {/* Grab handle. Hover alone would strand a touchscreen, so it toggles on click too. */}
         <button
-          onClick={() => setShowPinCards((v) => !v)}
-          className={`glass-panel px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 border transition-all cursor-pointer shadow-lg backdrop-blur-md ${
-            showPinCards
-              ? 'bg-sky-950/70 border-sky-400/50 text-sky-200'
-              : 'bg-slate-900/80 border-slate-700 text-slate-400'
+          type="button"
+          id="btn-toggle-map-controls"
+          onClick={() => setIsControlsPinned((v) => !v)}
+          aria-expanded={isControlsPinned}
+          title={isControlsPinned ? 'ซ่อนเมนูควบคุมแผนที่' : 'แสดงเมนูควบคุมแผนที่'}
+          className="pointer-events-auto absolute right-0 top-1/2 -translate-y-1/2 h-20 w-2.5 rounded-l-md bg-slate-100/25 hover:bg-sky-300/70 transition-colors cursor-pointer"
+        />
+
+        <div
+          className={`pointer-events-auto mr-4 max-h-full overflow-y-auto custom-scrollbar transition-transform duration-300 ease-out group-hover:translate-x-0 group-focus-within:translate-x-0 ${
+            isControlsPinned ? 'translate-x-0' : 'translate-x-[calc(100%+2rem)]'
           }`}
         >
-          <Sliders className="w-3.5 h-3.5 text-sky-400" />
-          <span className="text-[11px] font-medium">
-            {showPinCards ? 'แสดงการ์ดบนหมุด 3D (เปิด)' : 'ซ่อนการ์ดบนหมุด'}
-          </span>
-        </button>
+          <div className="glass-panel w-52 rounded-2xl border border-sky-500/30 shadow-2xl backdrop-blur-md p-2 flex flex-col gap-2.5 text-xs">
+            {/* --- Basemap --- */}
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] font-mono text-slate-400 px-1">แผนที่ฐาน</span>
 
-        {/* Site pin management. The add/delete plumbing already existed in
-            buildingStorageService but had no way in from the map.
-            Hidden unless the operator turns on edit tools in the settings modal:
-            "ลบไซต์" is one tap from removing a site pin, which is not something a
-            ceremony screen should offer a passer-by. */}
-        {showSiteEditTools && (
-        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 shadow-2xl border border-sky-500/30 backdrop-blur-md">
-          <button
-            id="btn-add-site-pin"
-            onClick={() => handlersRef.current.onOpenAddModal?.()}
-            title="เพิ่มหมุดไซต์ใหม่บนแผนที่"
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-emerald-200 hover:bg-emerald-900/40 transition-colors cursor-pointer"
-          >
-            <MapPinPlus className="w-3.5 h-3.5 text-emerald-400" />
-            <span>เพิ่มไซต์</span>
-          </button>
+              <button
+                onClick={() => handleLayerChange('esri-satellite')}
+                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+                  activeLayer === 'esri-satellite'
+                    ? 'bg-sky-500/40 text-white font-bold border border-sky-400'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60 border border-transparent'
+                }`}
+                title="ภาพถ่ายดาวเทียมจริงความละเอียดสูง (Esri World Imagery Real Satellite)"
+              >
+                <Satellite className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                <span className="text-[11px]">ดาวเทียมจริง</span>
+              </button>
 
-          <div className="w-px h-3.5 bg-slate-700" />
+              <button
+                onClick={() => handleLayerChange('hybrid')}
+                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+                  activeLayer === 'hybrid'
+                    ? 'bg-sky-500/40 text-white font-bold border border-sky-400'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60 border border-transparent'
+                }`}
+                title="ดาวเทียมจริง + เส้นขอบเขตภูมิประเทศ (Hybrid)"
+              >
+                <Layers className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="text-[11px]">Hybrid</span>
+              </button>
 
-          <button
-            id="btn-delete-site-pin"
-            onClick={() => {
-              const target = buildings.find((b) => b.id === selectedBuildingId);
-              if (target) handlersRef.current.onOpenDeleteDialog?.(target);
-            }}
-            disabled={selectedBuildingId === null}
-            title={
-              selectedBuildingId === null
-                ? 'เลือกหมุดบนแผนที่ก่อน จึงจะลบได้'
-                : 'ลบหมุดไซต์ที่เลือกอยู่'
-            }
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-rose-200 hover:bg-rose-900/40 transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-          >
-            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-            <span>ลบไซต์</span>
-          </button>
+              <button
+                onClick={() => handleLayerChange('dark')}
+                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+                  activeLayer === 'dark'
+                    ? 'bg-sky-500/40 text-white font-bold border border-sky-400'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60 border border-transparent'
+                }`}
+                title="แผนที่ Dark Cyber 3D"
+              >
+                <span className="text-xs w-3.5 text-center shrink-0">🌑</span>
+                <span className="text-[11px]">Dark 3D</span>
+              </button>
+            </div>
+
+            {/* --- Pin telemetry cards --- */}
+            <div className="border-t border-slate-700/60 pt-2">
+              <button
+                onClick={() => setShowPinCards((v) => !v)}
+                className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                  showPinCards
+                    ? 'bg-sky-950/70 border-sky-400/50 text-sky-200'
+                    : 'bg-slate-900/80 border-slate-700 text-slate-400'
+                }`}
+                title="เปิด/ปิดการ์ดข้อมูลที่ลอยอยู่เหนือหมุดแต่ละไซต์"
+              >
+                <Sliders className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                <span className="text-[11px] font-medium">
+                  {showPinCards ? 'การ์ดบนหมุด: เปิด' : 'การ์ดบนหมุด: ปิด'}
+                </span>
+              </button>
+            </div>
+
+            {/* --- Pitch presets --- */}
+            <div className="border-t border-slate-700/60 pt-2 flex flex-col gap-1">
+              <span className="text-[10px] font-mono text-slate-400 px-1">มุมเอียง</span>
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  onClick={() => handleSetPitchPreset(60)}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                    Math.abs(camera.pitch - 60) <= 3
+                      ? 'bg-sky-500/40 text-white border border-sky-400'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800 border border-transparent'
+                  }`}
+                  title="มุมมองเฉียง 60 องศา (Google Earth Perspective)"
+                >
+                  60° เฉียง
+                </button>
+
+                <button
+                  onClick={() => handleSetPitchPreset(MAX_PITCH)}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                    Math.abs(camera.pitch - MAX_PITCH) <= 3
+                      ? 'bg-sky-500/40 text-white border border-sky-400'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800 border border-transparent'
+                  }`}
+                  title="มุมมองเฉียงสูงสุด 65 องศา (จำกัดไว้ไม่ให้เส้นขอบฟ้าเข้าเฟรม จอจึงไม่มีขอบดำ)"
+                >
+                  {MAX_PITCH}° สูง
+                </button>
+
+                <button
+                  onClick={() => handleSetPitchPreset(45)}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                    Math.abs(camera.pitch - 45) <= 3
+                      ? 'bg-sky-500/40 text-white border border-sky-400'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800 border border-transparent'
+                  }`}
+                  title="มุมมองเฉียง 45 องศา (Isometric 3D)"
+                >
+                  45°
+                </button>
+
+                <button
+                  onClick={() => handleSetPitchPreset(0)}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
+                    camera.pitch <= 5
+                      ? 'bg-sky-500/40 text-white border border-sky-400'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800 border border-transparent'
+                  }`}
+                  title="มุมมองแนวระนาบ 2D จากด้านบน"
+                >
+                  0° ราบ
+                </button>
+              </div>
+            </div>
+
+            {/* --- Camera nudges --- */}
+            <div className="border-t border-slate-700/60 pt-2 flex flex-col gap-1">
+              <span className="text-[10px] font-mono text-slate-400 px-1">ควบคุมกล้อง</span>
+              <div className="flex items-center justify-between gap-1">
+                <button
+                  onClick={() => handleTilt(10)}
+                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
+                  title="เพิ่มมุมเฉียง 3D (Tilt Up)"
+                >
+                  <ArrowUp className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  onClick={() => handleTilt(-10)}
+                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
+                  title="ลดมุมเฉียง 3D (Tilt Down)"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  onClick={() => mapRef.current?.zoomIn()}
+                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
+                  title="ขยายแผนที่ (Zoom In)"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  onClick={() => mapRef.current?.zoomOut()}
+                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
+                  title="ย่อแผนที่ (Zoom Out)"
+                >
+                  <ZoomOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Back to the opening framing. After someone has panned and tilted
+                  the map during a talk, returning to the shot the ceremony opens
+                  on otherwise means nudging four separate controls. */}
+              <button
+                id="btn-reset-camera"
+                onClick={handleResetCamera}
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700 text-slate-300 hover:text-amber-300 hover:border-amber-500/50 transition-colors cursor-pointer"
+                title="กลับสู่มุมมองเริ่มต้น (ภาพรวมทั้ง 5 ไซต์)"
+              >
+                <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                <span className="text-[11px] font-medium">กลับมุมมองเริ่มต้น</span>
+              </button>
+            </div>
+
+            {/* --- Auto orbit --- */}
+            <div className="border-t border-slate-700/60 pt-2">
+              <button
+                onClick={handleToggleAutoOrbit}
+                className={`w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all cursor-pointer ${
+                  isAutoOrbit
+                    ? 'bg-amber-500/20 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.4)]'
+                    : 'bg-slate-900/80 border-slate-700 text-slate-300 hover:text-sky-300'
+                }`}
+                title="หมุนมุมมองรอบแผนที่ 3D อัตโนมัติ"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 shrink-0 ${isAutoOrbit ? 'animate-spin' : ''}`} />
+                <span className="text-[11px] font-medium">
+                  {isAutoOrbit ? 'กำลังหมุน 3D' : 'หมุน 3D อัตโนมัติ'}
+                </span>
+              </button>
+            </div>
+
+            {/* --- Site pin management ---
+                Hidden unless the operator turns on edit tools in the settings
+                modal: "ลบไซต์" is one tap from removing a site pin, which is not
+                something a ceremony screen should offer a passer-by. */}
+            {showSiteEditTools && (
+              <div className="border-t border-slate-700/60 pt-2 flex flex-col gap-1">
+                <span className="text-[10px] font-mono text-slate-400 px-1">แก้ไขไซต์</span>
+
+                <button
+                  id="btn-add-site-pin"
+                  onClick={() => handlersRef.current.onOpenAddModal?.()}
+                  title="เพิ่มหมุดไซต์ใหม่บนแผนที่"
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-medium text-emerald-200 bg-slate-900/80 border border-slate-700 hover:bg-emerald-900/40 transition-colors cursor-pointer"
+                >
+                  <MapPinPlus className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span>เพิ่มไซต์</span>
+                </button>
+
+                <button
+                  id="btn-delete-site-pin"
+                  onClick={() => {
+                    const target = buildings.find((b) => b.id === selectedBuildingId);
+                    if (target) handlersRef.current.onOpenDeleteDialog?.(target);
+                  }}
+                  disabled={selectedBuildingId === null}
+                  title={
+                    selectedBuildingId === null
+                      ? 'เลือกหมุดบนแผนที่ก่อน จึงจะลบได้'
+                      : 'ลบหมุดไซต์ที่เลือกอยู่'
+                  }
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-medium text-rose-200 bg-slate-900/80 border border-slate-700 hover:bg-rose-900/40 transition-colors cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-slate-900/80"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                  <span>ลบไซต์</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-        )}
-      </div>
-
-      {/* 3. Top-Right: 3D Camera Angles, Tilt Presets & Auto Orbit */}
-      <div className="absolute top-3 right-3 z-20 flex flex-col items-end gap-2 pointer-events-auto">
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={handleToggleAutoOrbit}
-            className={`px-2.5 py-1.5 rounded-xl border text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xl backdrop-blur-md ${
-              isAutoOrbit
-                ? 'bg-amber-500/20 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.4)]'
-                : 'glass-panel border-sky-500/30 text-slate-300 hover:text-sky-300'
-            }`}
-            title="หมุนมุมมองรอบแผนที่ 3D อัตโนมัติ"
-          >
-            <RotateCcw className={`w-3.5 h-3.5 ${isAutoOrbit ? 'animate-spin' : ''}`} />
-            <span className="text-[11px] font-medium hidden md:inline">
-              {isAutoOrbit ? 'กำลังหมุน 3D' : 'หมุน 3D อัตโนมัติ'}
-            </span>
-          </button>
-        </div>
-
-        {/* Row 2: 3D Tilt Angle Presets */}
-        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 border border-sky-500/30 shadow-xl backdrop-blur-md text-xs">
-          <span className="text-[10px] text-slate-400 px-1 font-mono hidden sm:inline">มุมเอียง:</span>
-
-          <button
-            onClick={() => handleSetPitchPreset(60)}
-            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
-              Math.abs(camera.pitch - 60) <= 3
-                ? 'bg-sky-500/40 text-white border border-sky-400'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800'
-            }`}
-            title="มุมมองเฉียง 60 องศา (Google Earth Perspective)"
-          >
-            60° เฉียง
-          </button>
-
-          <button
-            onClick={() => handleSetPitchPreset(MAX_PITCH)}
-            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
-              Math.abs(camera.pitch - MAX_PITCH) <= 3
-                ? 'bg-sky-500/40 text-white border border-sky-400'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800'
-            }`}
-            title="มุมมองเฉียงสูงสุด 65 องศา (จำกัดไว้ไม่ให้เส้นขอบฟ้าเข้าเฟรม จอจึงไม่มีขอบดำ)"
-          >
-            {MAX_PITCH}° เฉียงสูง
-          </button>
-
-          <button
-            onClick={() => handleSetPitchPreset(45)}
-            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
-              Math.abs(camera.pitch - 45) <= 3
-                ? 'bg-sky-500/40 text-white border border-sky-400'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800'
-            }`}
-            title="มุมมองเฉียง 45 องศา (Isometric 3D)"
-          >
-            45°
-          </button>
-
-          <button
-            onClick={() => handleSetPitchPreset(0)}
-            className={`px-2 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
-              camera.pitch <= 5
-                ? 'bg-sky-500/40 text-white border border-sky-400'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800'
-            }`}
-            title="มุมมองแนวระนาบ 2D จากด้านบน"
-          >
-            0° แนวราบ
-          </button>
-        </div>
-
-        {/* Row 3: 3D Camera Interactive Controls */}
-        <div className="glass-panel p-1 rounded-xl flex items-center gap-1 border border-sky-500/30 shadow-xl backdrop-blur-md">
-          <button
-            onClick={() => handleTilt(10)}
-            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
-            title="เพิ่มมุมเฉียง 3D (Tilt Up)"
-          >
-            <ArrowUp className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            onClick={() => handleTilt(-10)}
-            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-sky-300 transition-colors cursor-pointer"
-            title="ลดมุมเฉียง 3D (Tilt Down)"
-          >
-            <ArrowDown className="w-3.5 h-3.5" />
-          </button>
-
-          <div className="w-px h-3.5 bg-slate-700 mx-0.5" />
-
-          <button
-            onClick={() => mapRef.current?.zoomIn()}
-            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
-            title="ขยายแผนที่ (Zoom In)"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            onClick={() => mapRef.current?.zoomOut()}
-            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-200 hover:text-white transition-colors cursor-pointer"
-            title="ย่อแผนที่ (Zoom Out)"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
       </div>
 
       {/*
