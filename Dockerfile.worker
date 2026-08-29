@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# SolarEdge backend (worker/).
+#
+# This container exists because SolarEdge retired the API key in the URL. The
+# replacement — a Fleet API Key sent as a header — cannot ship in a browser
+# bundle, so this holds it and is the only thing here that talks to SolarEdge.
+# ---------------------------------------------------------------------------
+
+# --- Build: bundle the TypeScript sources into one plain JS file -----------
+# The backend imports nothing but node: builtins, so esbuild collapses it into
+# a single file and the runtime image needs no node_modules at all.
+FROM node:20-alpine AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY worker ./worker
+RUN npx esbuild worker/node-server.ts \
+      --bundle \
+      --platform=node \
+      --target=node20 \
+      --format=esm \
+      --outfile=/app/server.mjs
+
+# --- Serve -----------------------------------------------------------------
+FROM node:20-alpine AS serve
+WORKDIR /app
+
+COPY --from=build /app/server.mjs ./server.mjs
+
+# Nothing is written at runtime — the key arrives through the environment and
+# every cache is in memory — so the container needs no writable volume.
+RUN chown -R node:node /app
+USER node
+
+ENV PORT=8787
+
+EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:8787/api/solaredge/health || exit 1
+
+CMD ["node", "server.mjs"]

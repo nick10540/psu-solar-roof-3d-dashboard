@@ -104,6 +104,14 @@ export interface SolarEdgeTransformedOverview {
   lastUpdateTime: string; // Formatted readable Thai timestamp
   rawTimestamp: string;
   isMockData: boolean;
+  /**
+   * Today's measured power curve (quarter-hourly, kW), when the backend has it.
+   *
+   * Absent in mock mode and for a site with no readings. The detail page draws
+   * this instead of a simulated curve so the chart cannot disagree with the
+   * headline figures printed above it.
+   */
+  powerCurveToday?: Array<{ timestamp: string; powerKw: number }>;
 }
 
 // Building/Site to SolarEdge Site Mapping Definition
@@ -167,11 +175,43 @@ export interface SolarEdgeQuotaInfo {
   lastFetchTimestamp: number | null;
   lastFetchTimeString: string | null;
   isCacheActive: boolean;
+  /**
+   * Calls the backend actually made to SolarEdge today, as reported by the
+   * backend itself. The browser counts its own requests to /api/solaredge,
+   * which is a different (smaller) number — one browser poll fans out to one
+   * upstream call per site. Null when the backend has not answered yet.
+   */
+  upstreamCallsToday?: number | null;
+}
+
+/** One SolarEdge site the backend is configured to read. */
+export interface SolarEdgeSiteStatus {
+  siteId: number;
+  name: string;
+}
+
+/**
+ * Backend connection state, replacing the old client-side API key.
+ *
+ * The credential moved server-side: the backend holds a Fleet API Key covering
+ * every site, so the browser has nothing secret and nothing to configure here
+ * beyond choosing live-vs-mock.
+ */
+export interface SolarEdgeBackendStatus {
+  reachable: boolean;
+  /** Site IDs the backend is configured to read. */
+  siteIds: number[];
+  /** Site list from /health. Empty until it has answered. */
+  sites: SolarEdgeSiteStatus[];
+  /** Per-site upstream failures from the last fetch. */
+  siteErrors: Array<{ siteId: number; message: string }>;
+  /** Set when the backend served its last good data through an outage. */
+  staleReason: string | null;
+  message: string | null;
 }
 
 export interface SolarEdgeConfig {
   isConnected: boolean;
-  apiKey: string;
   siteId: string; // default active site
   useMock: boolean;
   lastSyncTime: string;

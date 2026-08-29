@@ -39,6 +39,7 @@ import {
   SolarEdgeTransformedOverview,
   SolarEdgeQuotaInfo,
   BuildingSiteBinding,
+  SolarEdgeBackendStatus,
   AppNavigationMode
 } from './types';
 import {
@@ -57,7 +58,8 @@ import {
   loadBuildingSiteBindings,
   saveBuildingSiteBinding,
   getDailyQuotaInfo,
-  MOCK_SOLAREDGE_SITES
+  MOCK_SOLAREDGE_SITES,
+  fetchBackendHealth
 } from './services/solarEdgeService';
 import {
   saveBuildingCoords,
@@ -118,6 +120,12 @@ export default function App() {
   const [bindings, setBindings] = useState<Record<number, BuildingSiteBinding>>(loadBuildingSiteBindings);
   const [isSolarEdgeLoading, setIsSolarEdgeLoading] = useState<boolean>(false);
 
+  // Backend diagnostics. With the API key server-side there is nothing
+  // for the operator to type any more, so the settings modal shows the state of
+  // the connection instead of a key field.
+  const [backendStatus, setBackendStatus] = useState<SolarEdgeBackendStatus | null>(null);
+  const [solarEdgeError, setSolarEdgeError] = useState<string | null>(null);
+
   // Time & Chart States
   const [timeRange] = useState<TimeRange>('day');
   const [timeOfDayHour, setTimeOfDayHour] = useState<number>(10.5); // 10:30 AM
@@ -170,7 +178,9 @@ export default function App() {
       if (!silent) setIsSolarEdgeLoading(true);
 
       try {
-        const res = await fetchSolarEdgeAccountData(config.apiKey, {
+        // No credential argument: the SolarEdge API key lives in worker/
+        // and never reach the browser. This call goes to /api/solaredge.
+        const res = await fetchSolarEdgeAccountData({
           forceRefresh,
           useMock: config.useMock,
           signal: controller.signal,
@@ -222,6 +232,10 @@ export default function App() {
           setSolarEdgeSites(res.sites);
           setSolarEdgeOverviews(res.overviews);
           setQuotaInfo(res.quota);
+          // Null in mock mode and on a cache hit — keep the last known backend
+          // state rather than blanking the settings panel on every cached tick.
+          if (res.backend) setBackendStatus(res.backend);
+          setSolarEdgeError(res.error ?? null);
           if (aggregated) setOverview((prev) => ({ ...prev, ...aggregated }));
         };
 
@@ -239,7 +253,7 @@ export default function App() {
         if (!silent && mountedRef.current) setIsSolarEdgeLoading(false);
       }
     },
-    [config.apiKey, config.useMock]
+    [config.useMock]
   );
 
   // Load SolarEdge Data on Mount & Config change.
@@ -253,6 +267,18 @@ export default function App() {
     pendingForceRefreshRef.current = false;
     loadSolarEdgeData({ forceRefresh: force });
   }, [loadSolarEdgeData]);
+
+  /**
+   * Probe the backend for its own diagnostics (token TTL, configured sites).
+   *
+   * Called from the authorization callback below, when the settings modal
+   * opens, and from its "ตรวจสอบ backend" button — never on the 5-minute poll:
+   * the poll needs data, not diagnostics.
+   */
+  const handleCheckBackend = useCallback(async () => {
+    const status = await fetchBackendHealth();
+    if (mountedRef.current) setBackendStatus(status);
+  }, []);
 
   // ---------------------------------------------------------------------------
   // 2. Auto-polling every 5 minutes (background, no UI disruption)
@@ -473,8 +499,12 @@ export default function App() {
   const handleOpenAddModal = useCallback(() => setIsAddBuildingModalOpen(true), []);
   const handleOpenDeleteDialog = useCallback((bld: BuildingInfo) => setDeleteCandidateBuilding(bld), []);
   const handleToggleLiveSimulation = useCallback(() => setIsLiveSimulation((v) => !v), []);
-  const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), []);
   const handleCloseSettings = useCallback(() => setIsSettingsOpen(false), []);
+
+  const handleOpenSettings = useCallback(() => {
+    setIsSettingsOpen(true);
+    if (!config.useMock) void handleCheckBackend();
+  }, [config.useMock, handleCheckBackend]);
 
   const handleManualRefresh = useCallback(() => {
     handleTimeOfDayChange(timeOfDayHour);
@@ -483,12 +513,14 @@ export default function App() {
 
   const handleSaveConfig = useCallback(
     (newCfg: SolarEdgeConfig) => {
-      const sourceChanged = config.apiKey !== newCfg.apiKey || config.useMock !== newCfg.useMock;
+      // Live-vs-mock is now the only setting that changes where data comes
+      // from; the API key it used to share this check with moved to worker/.
+      const sourceChanged = config.useMock !== newCfg.useMock;
       setConfig(newCfg);
 
       if (sourceChanged) {
-        // loadSolarEdgeData is about to be re-created with the new credentials;
-        // let its effect do the fetch so the request carries the new key.
+        // loadSolarEdgeData is about to be re-created for the new mode; let its
+        // effect do the fetch so the request runs against the mode just saved.
         pendingForceRefreshRef.current = true;
       } else {
         // Same data source (e.g. only the interval changed) — the effect will
@@ -496,7 +528,7 @@ export default function App() {
         loadSolarEdgeData({ forceRefresh: true });
       }
     },
-    [config.apiKey, config.useMock, loadSolarEdgeData]
+    [config.useMock, loadSolarEdgeData]
   );
 
   const activeBinding = selectedBuilding ? bindings[selectedBuilding.id] : undefined;
@@ -619,8 +651,11 @@ export default function App() {
           bindings={bindings}
           buildings={buildings}
           isLoading={isSolarEdgeLoading}
+          backendStatus={backendStatus}
+          lastError={solarEdgeError}
           onSaveConfig={handleSaveConfig}
           onForceRefresh={() => loadSolarEdgeData({ forceRefresh: true })}
+          onCheckBackend={handleCheckBackend}
           onUnbindBuilding={handleUnbindBuilding}
           onClose={handleCloseSettings}
         />

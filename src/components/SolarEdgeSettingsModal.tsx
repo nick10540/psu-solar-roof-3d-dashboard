@@ -1,38 +1,44 @@
 /**
  * SolarEdgeSettingsModal.tsx
- * Advanced SolarEdge Monitoring API Management Modal
- * Compliant with SolarEdge Monitoring API Specification:
- * - Single Account Fetching (/sites/list?size=5)
- * - 300 Calls/Day Rate Limit Quota Tracker with 15-Minute SWR Cache
- * - Real-time Transformed Metric Summary
- * - Building-Site Binding Overview
+ * SolarEdge connection & multi-site manager.
+ *
+ * ---------------------------------------------------------------------------
+ * THERE IS NO API KEY FIELD HERE ANY MORE.
+ *
+ * The credential is a Fleet API Key that lives in worker/ and must never be
+ * typed into — or stored by — a browser. One key covers every site, so there is
+ * nothing left to configure here: what used to be an input is a STATUS panel.
+ * ---------------------------------------------------------------------------
  */
 
 import React, { useState } from 'react';
-import { 
-  SolarEdgeConfig, 
-  SolarEdgeRawSite, 
-  SolarEdgeTransformedOverview, 
-  SolarEdgeQuotaInfo, 
+import {
+  SolarEdgeConfig,
+  SolarEdgeRawSite,
+  SolarEdgeTransformedOverview,
+  SolarEdgeQuotaInfo,
+  SolarEdgeBackendStatus,
   BuildingSiteBinding,
   BuildingInfo
 } from '../types';
-import { 
-  X, 
-  Key, 
-  Server, 
-  CheckCircle2, 
-  AlertCircle, 
-  RefreshCw, 
-  ShieldCheck, 
-  Database, 
-  Layers, 
-  Activity, 
-  Zap, 
-  Clock, 
-  Unlink, 
+import {
+  X,
+  Key,
+  Server,
+  CheckCircle2,
+  AlertCircle,
+  RefreshCw,
+  ShieldCheck,
+  Database,
+  Layers,
+  Activity,
+  Zap,
+  Clock,
+  Unlink,
   ExternalLink,
-  Sparkles
+  Sparkles,
+  Lock,
+  PlugZap
 } from 'lucide-react';
 
 interface SolarEdgeSettingsModalProps {
@@ -43,8 +49,12 @@ interface SolarEdgeSettingsModalProps {
   bindings: Record<number, BuildingSiteBinding>;
   buildings: BuildingInfo[];
   isLoading: boolean;
+  /** Null until the backend has answered once, and in mock mode. */
+  backendStatus: SolarEdgeBackendStatus | null;
+  lastError: string | null;
   onSaveConfig: (config: SolarEdgeConfig) => void;
   onForceRefresh: () => Promise<void>;
+  onCheckBackend: () => Promise<void>;
   onUnbindBuilding: (buildingId: number) => void;
   onClose: () => void;
 }
@@ -57,13 +67,17 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
   bindings,
   buildings,
   isLoading,
+  backendStatus,
+  lastError,
   onSaveConfig,
   onForceRefresh,
+  onCheckBackend,
   onUnbindBuilding,
   onClose,
 }) => {
   const [formData, setFormData] = useState<SolarEdgeConfig>({ ...config });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
   const handleRefresh = async () => {
@@ -71,7 +85,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
     setFeedbackMsg(null);
     try {
       await onForceRefresh();
-      setFeedbackMsg('ดึงข้อมูลล่าสุดจาก SolarEdge API ทั้ง 5 ไซต์สำเร็จเรียบร้อย');
+      setFeedbackMsg('สั่งดึงข้อมูลล่าสุดผ่าน backend เรียบร้อย');
     } catch (e) {
       setFeedbackMsg('เกิดข้อผิดพลาดในการดึงข้อมูลล่าสุด');
     } finally {
@@ -79,11 +93,23 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
     }
   };
 
+  const handleCheckBackend = async () => {
+    setIsChecking(true);
+    setFeedbackMsg(null);
+    try {
+      await onCheckBackend();
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     onSaveConfig({
       ...formData,
-      isConnected: !formData.useMock && !!formData.apiKey.trim(),
+      // "Connected" now means the backend answered, not that someone typed a
+      // key. A key in a text box never proved a connection existed anyway.
+      isConnected: !formData.useMock && backendStatus?.reachable === true,
     });
     onClose();
   };
@@ -101,6 +127,8 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
     sites.length > 0 &&
     (config.useMock || sites.every((s) => overviews[s.id]?.isMockData === true));
   const quotaPercentage = Math.min(100, Math.round((quotaInfo.callsMadeToday / quotaInfo.dailyQuotaLimit) * 100));
+
+  const isBackendHealthy = backendStatus?.reachable === true;
 
   return (
     <div
@@ -120,9 +148,9 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
               <Key className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white">SolarEdge Monitoring API & Multi-Site Manager</h3>
+              <h3 className="text-base font-bold text-white">SolarEdge Backend & Multi-Site Manager</h3>
               <p className="text-xs text-slate-400">
-                ดึงข้อมูล 5 ไซต์ภายใต้บัญชีเดียวกัน พร้อมระบบประหยัดโควตา 300 Requests/วัน
+                ดึงข้อมูลผ่าน backend (Fleet API Key) — หาดใหญ่ / ตรัง / ปัตตานี พร้อมระบบแคชประหยัดโควตา
               </p>
             </div>
           </div>
@@ -135,13 +163,13 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
           </button>
         </div>
 
-        {/* 1. Rate Limit & Daily Quota Status Banner (300 calls/day budget) */}
+        {/* 1. How many times the dashboard fetched today (its own counter, plus what the backend spent upstream) */}
         <div className="p-3.5 rounded-2xl bg-slate-900/80 border border-sky-500/30 mb-4 space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
               <span className="text-xs font-bold text-slate-200">
-                สถานะโควตา API Rate Limit (300 Calls / วัน)
+                จำนวนครั้งที่ดึงข้อมูลวันนี้ (นับฝั่ง dashboard)
               </span>
             </div>
 
@@ -149,6 +177,14 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
               <span className="text-[11px] font-mono text-sky-300">
                 ใช้ไป {quotaInfo.callsMadeToday} / {quotaInfo.dailyQuotaLimit} ครั้ง
               </span>
+              {/* The browser counts its own calls to /api/solaredge; the backend
+                  reports what it actually spent upstream. They are different
+                  numbers and conflating them hid the real usage. */}
+              {quotaInfo.upstreamCallsToday != null && (
+                <span className="text-[10px] bg-sky-500/20 text-sky-200 px-2 py-0.5 rounded-full border border-sky-400/30 font-mono">
+                  upstream {quotaInfo.upstreamCallsToday}
+                </span>
+              )}
               <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-400/30 font-mono">
                 เหลือ {quotaInfo.remainingCalls} ครั้ง
               </span>
@@ -170,7 +206,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
               <span className={`w-2 h-2 rounded-full ${quotaInfo.isCacheActive ? 'bg-emerald-400' : 'bg-amber-400'}`} />
               <span>
                 {quotaInfo.isCacheActive
-                  ? 'กำลังใช้งานข้อมูลจาก Caching (SWR 15 นาที เพื่อประหยัดโควตา)'
+                  ? 'กำลังใช้งานข้อมูลจากแคช (SWR 4.5 นาที — ทั้ง backend และเบราว์เซอร์)'
                   : 'พร้อมเรียกข้อมูลรอบถัดไป'}
               </span>
             </div>
@@ -214,7 +250,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                   <span>🌐 SolarEdge Live API</span>
                 </div>
                 <div className="text-[10px] text-slate-400 mt-1">
-                  ดึงข้อมูลจริงจาก SolarEdge Monitoring API (/sites/list)
+                  ดึงข้อมูลจริงอัตโนมัติผ่าน backend — หาดใหญ่ / ตรัง / ปัตตานี
                 </div>
               </button>
 
@@ -239,24 +275,101 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
             </div>
           </div>
 
-          {/* 3. API Key Input */}
+          {/* 3. Backend connection status (replaces the old API key field) */}
           {!formData.useMock && (
             <div className="space-y-2">
-              <label className="block text-slate-300 font-semibold">
-                SolarEdge API Key (สำหรับดึง 5 ไซต์ในบัญชีเดียวกัน)
+              <label className="block text-slate-300 font-semibold flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                <span>การเชื่อมต่อ SolarEdge (Fleet API Key — ไม่ต้องกรอกอะไร)</span>
               </label>
-              <div className="relative">
-                <input
-                  id="input-solaredge-api-key"
-                  type="password"
-                  value={formData.apiKey}
-                  onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-                  placeholder="กรอก SolarEdge API Key เช่น 32 ตัวอักษร"
-                  className="w-full bg-slate-900/90 border border-sky-500/30 rounded-xl px-3 py-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-sky-400"
-                />
+
+              <div
+                className={`p-3 rounded-2xl border space-y-2 ${
+                  isBackendHealthy
+                    ? 'bg-emerald-950/30 border-emerald-500/40'
+                    : backendStatus
+                      ? 'bg-rose-950/30 border-rose-500/40'
+                      : 'bg-slate-900/70 border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <PlugZap
+                      className={`w-4 h-4 ${isBackendHealthy ? 'text-emerald-400' : 'text-rose-400'}`}
+                    />
+                    <span className="font-bold text-white">
+                      {!backendStatus
+                        ? 'ยังไม่ได้ตรวจสอบ backend'
+                        : backendStatus.reachable
+                          ? `เชื่อมต่อแล้ว (${backendStatus.sites.length} ไซต์)`
+                          : 'ติดต่อ backend ไม่ได้'}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    id="btn-check-backend"
+                    onClick={handleCheckBackend}
+                    disabled={isChecking}
+                    className="text-sky-300 hover:text-white flex items-center gap-1 font-semibold hover:underline cursor-pointer text-[11px]"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isChecking ? 'animate-spin text-sky-400' : ''}`} />
+                    <span>{isChecking ? 'กำลังตรวจสอบ...' : 'ตรวจสอบสถานะ'}</span>
+                  </button>
+                </div>
+
+                {/* The sites this key reads. One fleet key covers all of them,
+                    so this is a list, not a per-site connection checklist. */}
+                {backendStatus?.sites.length ? (
+                  <div className="space-y-1">
+                    {backendStatus.sites.map((s) => (
+                      <div
+                        key={s.siteId}
+                        className="flex items-center justify-between gap-2 bg-slate-950/60 rounded-lg px-2 py-1.5 border border-slate-800"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span className="text-[11px] text-slate-200 truncate">{s.name}</span>
+                        </div>
+                        <span className="text-[9px] font-mono text-slate-500 shrink-0">{s.siteId}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+
+                {/* Per-site upstream failures. Two working pins and one silent
+                    gap is exactly the state that needs naming out loud. */}
+                {backendStatus?.siteErrors.length ? (
+                  <div className="text-[10px] text-amber-300 bg-amber-950/40 border border-amber-600/40 rounded-lg px-2 py-1.5 space-y-0.5">
+                    {backendStatus.siteErrors.map((e) => (
+                      <div key={e.siteId}>
+                        <span className="font-mono font-bold">Site {e.siteId}</span>: {e.message}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                {backendStatus?.message && (
+                  <div className="text-[10px] text-rose-300 bg-rose-950/40 border border-rose-600/40 rounded-lg px-2 py-1.5 flex items-start gap-1.5">
+                    <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
+                    <span>{backendStatus.message}</span>
+                  </div>
+                )}
+
+                {lastError && !backendStatus?.message && (
+                  <div className="text-[10px] text-amber-300 bg-amber-950/40 border border-amber-600/40 rounded-lg px-2 py-1.5 flex items-start gap-1.5">
+                    <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
+                    <span>{lastError}</span>
+                  </div>
+                )}
               </div>
+
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                ระบบจะเรียก Endpoint: <code className="text-sky-300 font-mono">/sites/list?size=5&api_key=...</code> เพื่อดึง 5 ไซต์แรกในบัญชีทันที และเก็บแคชไว้ 15 นาทีตามรอบเซิร์ฟเวอร์ SolarEdge
+                Fleet API Key เก็บอยู่ที่ <code className="text-sky-300 font-mono">worker/.dev.vars</code> ฝั่งเซิร์ฟเวอร์เท่านั้น
+                เบราว์เซอร์เรียกแค่ <code className="text-sky-300 font-mono">/api/solaredge/overview</code> แล้ว backend
+                แนบ <code className="text-sky-300 font-mono">X-API-Key</code> ให้เอง — ถ้าเชื่อมต่อไม่ได้
+                ให้ตรวจว่ารัน <code className="text-sky-300 font-mono">npm run worker</code> อยู่หรือไม่
               </p>
             </div>
           )}
@@ -283,8 +396,8 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
             {isMockSiteList && (
               <p className="text-[10px] text-amber-300/80 bg-amber-950/30 border border-amber-700/30 rounded-lg px-2 py-1.5 mb-2 leading-snug">
                 ไซต์ทั้ง {sites.length} รายการนี้เป็น<strong> ข้อมูลจำลอง </strong>
-                ไม่ได้ดึงจากบัญชี SolarEdge จริง — สลับไปโหมด SolarEdge Live API แล้วกรอก API Key
-                เพื่อดึงรายชื่อไซต์จริงในบัญชี
+                ไม่ได้ดึงจากบัญชี SolarEdge จริง — สลับไปโหมด SolarEdge Live API
+                เพื่อให้ backend ดึงข้อมูลจริงของ 3 ไซต์ (หาดใหญ่ / ตรัง / ปัตตานี) อัตโนมัติ
               </p>
             )}
 
@@ -395,7 +508,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
           {/* Footer Actions */}
           <div className="flex items-center justify-between pt-3 border-t border-sky-500/20">
             <div className="text-[10px] text-slate-400">
-              ������ คลิกเลือกอาคารใดก็ได้บนแผนที่เพื่อผูก SolarEdge Site ได้โดยตรง
+              💡 คลิกเลือกอาคารใดก็ได้บนแผนที่เพื่อผูก SolarEdge Site ได้โดยตรง
             </div>
 
             <div className="flex items-center gap-2">

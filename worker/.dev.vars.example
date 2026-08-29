@@ -1,0 +1,17 @@
+# Copy to worker/.dev.vars and fill in. NEVER commit the real value, and never
+# place this file under public/ — Vite copies public/ verbatim into dist/.
+
+# Fleet API Key from the SolarEdge Developer Platform ("My Fleet Access").
+# One key covers every site in the account's fleet, sent as X-API-Key.
+SOLAREDGE_API_KEY=
+
+# Site IDs the backend is allowed to read.
+#   4956359 = หาดใหญ่ | 4821237 = ตรัง | 4947126 = ปัตตานี
+SOLAREDGE_SITE_IDS=4956359,4821237,4947126
+
+SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
+
+# CORS allow-list. Leave empty for same-origin (behind the Vite/Nginx proxy).
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+PORT=8787

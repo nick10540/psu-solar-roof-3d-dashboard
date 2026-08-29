@@ -1,32 +1,48 @@
 /**
- * SolarEdge Monitoring API Client & Data Transformation Service
- * Reference: SolarEdge Monitoring API Specification (https://knowledge-center.solaredge.com/sites/kc/files/se_monitoring_api.pdf)
- * 
- * Features:
- * 1. Efficient Site List Fetching (/sites/list?size=5&api_key={API_KEY}), cached per session
- * 2. BULK overview fetching: /sites/{id1,id2,...}/overview -> 1 call for all 5 sites
- *    (per-site Promise.all remains as an automatic fallback)
- * 3. 300 Calls/Day Rate Limit Protection with SWR/LocalStorage caching + a reserve floor
- * 4. Unit Transformation (W -> kW, Wh -> kWh/MWh, Timestamp formatting)
- * 5. Building-Site Dynamic Binding persistence
- * 6. AbortSignal support so an in-flight poll can be cancelled on unmount
+ * SolarEdge Client & Data Transformation Service
  *
- * Daily budget with the dashboard's 5-minute poll (12 h event):
- *   1 site-list call + 144 bulk overview calls = ~145 of the 300/day allowance.
+ * ---------------------------------------------------------------------------
+ * THE BROWSER NO LONGER TALKS TO SOLAREDGE.
+ *
+ * SolarEdge retired the `?api_key=` scheme. The replacement is a Fleet API
+ * Key sent as a header — a long-lived credential that must never reach a
+ * browser bundle. It lives in the backend under worker/:
+ *
+ *   browser  ──GET /api/solaredge/overview──▶  worker/  ──X-API-Key──▶  SolarEdge
+ *
+ * The backend assembles each site's readings from the v2 series endpoints and
+ * hands back one payload. This file is now purely: fetch that one endpoint,
+ * cache, transform units, and persist bindings.
+ * ---------------------------------------------------------------------------
+ *
+ * Features:
+ * 1. Single backend call per refresh (/api/solaredge/overview)
+ * 2. SWR / LocalStorage caching so a reload or a second tab costs nothing
+ * 3. Unit Transformation (W -> kW, Wh -> kWh/MWh, Timestamp formatting)
+ * 4. Building-Site Dynamic Binding persistence
+ * 5. AbortSignal support so an in-flight poll can be cancelled on unmount
+ *
+ * Live sites (สุราษฎร์ธานี and ภูเก็ต have no site ID yet and stay unbound):
+ *   4956359 หาดใหญ่ | 4821237 ตรัง | 4947126 ปัตตานี
  */
 
-import { 
-  SolarEdgeRawSite, 
-  SolarEdgeSitesListResponse, 
-  SolarEdgeOverviewResponse, 
-  SolarEdgeTransformedOverview, 
-  SolarEdgeQuotaInfo, 
-  BuildingSiteBinding 
+import {
+  SolarEdgeRawSite,
+  SolarEdgeOverviewResponse,
+  SolarEdgeTransformedOverview,
+  SolarEdgeQuotaInfo,
+  SolarEdgeBackendStatus,
+  SolarEdgeSiteStatus,
+  BuildingSiteBinding
 } from '../types';
 
 // Constants
-const SOLAREDGE_DIRECT_URL = 'https://monitoringapi.solaredge.com';
-const SOLAREDGE_PROXY_URL = '/api/solaredge';
+/**
+ * Same-origin path. In dev, Vite proxies it to http://localhost:8787; in
+ * production put the backend behind the same host (Nginx/Caddy location block)
+ * so this stays same-origin and no CORS is involved.
+ */
+const BACKEND_BASE_URL = '/api/solaredge';
 const DAILY_QUOTA_LIMIT = 300; // SolarEdge daily request limit policy
 
 /**
@@ -50,52 +66,98 @@ export interface SolarEdgeRequestOptions {
   signal?: AbortSignal;
 }
 
-/**
- * Try the dev/prod proxy first (avoids browser CORS), fall back to a direct call.
- *
- * Two corrections over the previous version:
- *  1. A proxy response with an HTTP error status is RETURNED, not retried
- *     directly. The old code fell through on any non-2xx, so a single logical
- *     request cost two real SolarEdge calls and silently burned double quota.
- *  2. Production builds have no /api/solaredge route, so the SPA fallback
- *     answers 200 with index.html. The content-type check catches that and
- *     routes to the direct endpoint instead of failing on JSON.parse.
- */
-async function fetchSolarEdgeApi(
-  endpointWithQuery: string,
-  options: SolarEdgeRequestOptions = {}
-): Promise<Response> {
-  const { signal } = options;
-  const proxyUrl = `${SOLAREDGE_PROXY_URL}${endpointWithQuery}`;
+/** Wire shape of GET /api/solaredge/overview. Mirrors worker/src/solaredge.ts. */
+interface BackendOverviewPayload {
+  sites: SolarEdgeRawSite[];
+  overviews: Record<string, SolarEdgeOverviewResponse['overview']>;
+  /** Today's quarter-hourly power curve per site, in Watts. */
+  powerSeries?: Record<string, Array<{ t: string; w: number }>>;
+  errors?: Array<{ siteId: number; message: string; status?: number }>;
+  fetchedAt: number;
+  fromCache: boolean;
+  upstreamCallsToday: number;
+  /** Present when the backend served its last good data through an outage. */
+  staleReason?: string;
+  /** Present on a backend-side failure instead of the fields above. */
+  error?: string;
+  message?: string;
+}
 
+class BackendError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'BackendError';
+    this.status = status;
+  }
+}
+
+/**
+ * Call the backend.
+ *
+ * The old version raced a proxy against a direct SolarEdge call and sniffed
+ * content-type to tell a real answer from an SPA fallback. None of that is
+ * needed now: there is exactly one endpoint, on our own origin. A non-JSON
+ * response means the backend is not running, and saying so plainly is far more
+ * useful than silently reaching past it.
+ */
+async function fetchBackend(
+  path: string,
+  options: SolarEdgeRequestOptions = {}
+): Promise<BackendOverviewPayload> {
+  const { signal } = options;
+
+  let res: Response;
   try {
-    const res = await fetch(proxyUrl, {
+    res = await fetch(`${BACKEND_BASE_URL}${path}`, {
       headers: { Accept: 'application/json' },
       signal,
     });
-
-    const contentType = res.headers.get('content-type') || '';
-    const proxyIsWired = contentType.includes('json');
-
-    // The proxy reached SolarEdge — trust its answer, success or failure.
-    if (proxyIsWired) return res;
-  } catch (proxyErr) {
-    if (signal?.aborted) throw proxyErr;
-    console.warn('Proxy request failed, falling back to direct SolarEdge API call:', proxyErr);
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    throw new BackendError(
+      'ติดต่อ backend ไม่ได้ — ตรวจสอบว่ารัน `npm run worker` อยู่หรือไม่',
+      0
+    );
   }
 
-  const directUrl = `${SOLAREDGE_DIRECT_URL}${endpointWithQuery}`;
-  return fetch(directUrl, {
-    headers: { Accept: 'application/json' },
-    signal,
-  });
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('json')) {
+    throw new BackendError(
+      `Backend ไม่ได้ตอบกลับเป็น JSON (HTTP ${res.status}) — เส้นทาง ${BACKEND_BASE_URL} ยังไม่ได้ต่อกับ worker/`,
+      res.status
+    );
+  }
+
+  const payload = (await res.json()) as BackendOverviewPayload;
+
+  if (!res.ok) {
+    throw new BackendError(
+      payload.message || payload.error || `Backend ตอบกลับ HTTP ${res.status}`,
+      res.status
+    );
+  }
+
+  return payload;
 }
 
-// LocalStorage Keys
-const STORAGE_KEY_SITES_CACHE = 'solaredge_sites_cache_v4';
-const STORAGE_KEY_OVERVIEWS_CACHE = 'solaredge_overviews_cache_v4';
-const STORAGE_KEY_DAILY_CALLS = 'solaredge_daily_calls_v4';
-const STORAGE_KEY_BINDINGS = 'mea_solar_building_bindings_v4';
+// LocalStorage Keys.
+//
+// Bumped to v5 with the v2 migration: a v4 cache holds overviews keyed by
+// the old placeholder site IDs, and a v4 binding map points buildings at them.
+// Left in place they would quietly shadow the real 4956359 / 4821237 / 4947126
+// readings on every machine that has run the previous build.
+const STORAGE_KEY_SITES_CACHE = 'solaredge_sites_cache_v5';
+const STORAGE_KEY_OVERVIEWS_CACHE = 'solaredge_overviews_cache_v5';
+const STORAGE_KEY_DAILY_CALLS = 'solaredge_daily_calls_v5';
+const STORAGE_KEY_BINDINGS = 'mea_solar_building_bindings_v5';
+
+/** Live SolarEdge site IDs, keyed by the dashboard's building id. */
+export const LIVE_SITE_IDS = {
+  TRANG: 4821237,
+  HATYAI: 4956359,
+  PATTANI: 4947126,
+} as const;
 
 // 5 MEA Solar Roof Regional Sites for Demo / Mock Mode & API Ready
 export const MOCK_SOLAREDGE_SITES: SolarEdgeRawSite[] = [
@@ -150,7 +212,7 @@ export const MOCK_SOLAREDGE_SITES: SolarEdgeRawSite[] = [
     },
   },
   {
-    id: 2849103,
+    id: 4821237,
     name: 'MEA Solar Roof - ตรัง',
     accountId: 91403,
     status: 'Active',
@@ -175,7 +237,7 @@ export const MOCK_SOLAREDGE_SITES: SolarEdgeRawSite[] = [
     },
   },
   {
-    id: 2849104,
+    id: 4956359,
     name: 'MEA Solar Roof - หาดใหญ่',
     accountId: 91404,
     status: 'Active',
@@ -200,7 +262,7 @@ export const MOCK_SOLAREDGE_SITES: SolarEdgeRawSite[] = [
     },
   },
   {
-    id: 2849105,
+    id: 4947126,
     name: 'MEA Solar Roof - ปัตตานี',
     accountId: 91405,
     status: 'Active',
@@ -286,6 +348,7 @@ export function getDailyQuotaInfo(): SolarEdgeQuotaInfo {
       lastFetchTimestamp: lastTimestamp,
       lastFetchTimeString: lastTimestamp ? formatSolarEdgeTimestamp(new Date(lastTimestamp).toISOString()) : null,
       isCacheActive,
+      upstreamCallsToday: null,
     };
   } catch {
     return {
@@ -296,6 +359,7 @@ export function getDailyQuotaInfo(): SolarEdgeQuotaInfo {
       lastFetchTimestamp: null,
       lastFetchTimeString: null,
       isCacheActive: false,
+      upstreamCallsToday: null,
     };
   }
 }
@@ -435,13 +499,15 @@ export function generateMockSolarEdgeOverview(site: SolarEdgeRawSite): SolarEdge
 }
 
 // -------------------------------------------------------------
-// Part 1: Data Fetching & API Logic (with Rate Limit 300 calls/day budget)
+// Part 1: Data Fetching (via the worker/ backend — no credentials here)
 // -------------------------------------------------------------
 export interface FetchSitesResult {
   sites: SolarEdgeRawSite[];
   overviews: Record<number, SolarEdgeTransformedOverview>;
   isUsingCache: boolean;
   quota: SolarEdgeQuotaInfo;
+  /** Backend diagnostics for the settings modal. Null in mock mode. */
+  backend: SolarEdgeBackendStatus | null;
   error?: string;
 }
 
@@ -450,17 +516,6 @@ export interface FetchAccountDataOptions extends SolarEdgeRequestOptions {
   useMock?: boolean;
   /** Skip the live call and serve cache when the daily budget is nearly spent. Default true. */
   respectQuotaReserve?: boolean;
-}
-
-/** Shape returned by the bulk endpoint /sites/{idList}/overview */
-interface BulkOverviewResponse {
-  sitesOverviews?: {
-    count?: number;
-    siteEnergyList?: Array<{
-      siteId: number;
-      siteOverview: SolarEdgeOverviewResponse['overview'];
-    }>;
-  };
 }
 
 function readCachedSites(): SolarEdgeRawSite[] | null {
@@ -505,123 +560,47 @@ function writeCache(
   }
 }
 
-/**
- * Fetch overviews for every site in ONE request.
- *
- * Endpoint: /sites/{siteId1,siteId2,...}/overview?api_key={API_KEY}
- *
- * This is the difference between the 5-minute poll fitting inside the daily
- * quota and blowing straight through it:
- *   per-site loop -> 5 calls x 12 polls/hour x 12 hours = 720 calls/day  (over the 300 limit)
- *   bulk endpoint -> 1 call  x 12 polls/hour x 12 hours = 144 calls/day  (comfortably inside)
- *
- * Falls back to the per-site loop if an account or firmware does not expose
- * the bulk route, so behaviour never regresses.
- */
-async function fetchOverviewsBulk(
-  apiKey: string,
-  sites: SolarEdgeRawSite[],
-  options: SolarEdgeRequestOptions = {}
-): Promise<Record<number, SolarEdgeTransformedOverview> | null> {
-  if (sites.length === 0) return null;
-
-  const idList = sites.map((s) => s.id).join(',');
-  const query = `/sites/${idList}/overview?api_key=${encodeURIComponent(apiKey.trim())}`;
-
-  incrementDailyCallCount(1);
-  const res = await fetchSolarEdgeApi(query, options);
-  if (!res.ok) {
-    console.warn(`Bulk overview endpoint unavailable (HTTP ${res.status}); using per-site calls.`);
-    return null;
-  }
-
-  const data: BulkOverviewResponse = await res.json();
-  const list = data.sitesOverviews?.siteEnergyList;
-  if (!Array.isArray(list) || list.length === 0) return null;
-
-  const byId = new Map(sites.map((s) => [s.id, s]));
-  const record: Record<number, SolarEdgeTransformedOverview> = {};
-
-  list.forEach((entry) => {
-    const site = byId.get(entry.siteId);
-    if (!site || !entry.siteOverview) return;
-    record[entry.siteId] = transformSolarEdgeOverview(
-      site.id,
-      site.name,
-      site.peakPower,
-      site.status,
-      entry.siteOverview,
-      false
-    );
-  });
-
-  // A site the bulk call omitted is simply absent. It previously received a
-  // simulated overview "so it would not vanish", which meant a site SolarEdge
-  // had no data for still showed a plausible number. Absent -> "no data".
-  const missing = sites.filter((s) => !record[s.id]);
-  if (missing.length > 0) {
-    console.warn(
-      `SolarEdge returned no overview for ${missing.length} site(s): ` +
-        missing.map((s) => s.id).join(', ')
-    );
-  }
-
-  return record;
+function backendStatusFrom(
+  payload: BackendOverviewPayload,
+  reachable: boolean,
+  message: string | null = null
+): SolarEdgeBackendStatus {
+  return {
+    reachable,
+    siteIds: payload.sites.map((s) => s.id),
+    // The site list comes from /health; a data poll has no need to ask, so
+    // leave it empty and let the caller keep the last known list.
+    sites: [],
+    siteErrors: (payload.errors ?? []).map((e) => ({ siteId: e.siteId, message: e.message })),
+    staleReason: payload.staleReason ?? null,
+    message,
+  };
 }
 
-/** Legacy path: one request per site, in parallel. Costs N calls. */
-async function fetchOverviewsPerSite(
-  apiKey: string,
-  sites: SolarEdgeRawSite[],
-  options: SolarEdgeRequestOptions = {}
-): Promise<Record<number, SolarEdgeTransformedOverview>> {
-  incrementDailyCallCount(sites.length);
-
-  // A failed site yields null, not a simulated stand-in, so it surfaces as
-  // "no data" instead of a convincing fabrication.
-  const results = await Promise.all(
-    sites.map(async (site): Promise<SolarEdgeTransformedOverview | null> => {
-      try {
-        const query = `/site/${site.id}/overview?api_key=${encodeURIComponent(apiKey.trim())}`;
-        const res = await fetchSolarEdgeApi(query, options);
-        if (!res.ok) {
-          console.error(`Failed to fetch overview for site ${site.id}: HTTP ${res.status}`);
-          return null;
-        }
-        const data: SolarEdgeOverviewResponse = await res.json();
-        return transformSolarEdgeOverview(
-          site.id,
-          site.name,
-          site.peakPower,
-          site.status,
-          data.overview,
-          false
-        );
-      } catch (err) {
-        if (options.signal?.aborted) throw err;
-        console.error(`Error fetching overview for site ${site.id}:`, err);
-        return null;
-      }
-    })
-  );
-
-  const record: Record<number, SolarEdgeTransformedOverview> = {};
-  results.forEach((item) => {
-    if (item) record[item.siteId] = item;
-  });
-  return record;
+function unreachableBackend(message: string): SolarEdgeBackendStatus {
+  return {
+    reachable: false,
+    siteIds: [],
+    sites: [],
+    siteErrors: [],
+    staleReason: null,
+    message,
+  };
 }
 
 /**
- * Fetch all sites under the account and their overviews, with SWR caching,
- * quota protection and cancellation support.
+ * Fetch the live sites and their overviews from the backend, with SWR caching,
+ * a quota brake and cancellation support.
  *
- * Call cost per live refresh:
- *   - first refresh of a session: 2 calls (/sites/list + bulk overview)
- *   - every later refresh:        1 call  (site list is reused from cache)
+ * Cost per live refresh: ONE request to our own backend. The backend decides
+ * how many upstream SolarEdge calls that becomes (currently one per site,
+ * itself cached for 4.5 minutes), so a second browser tab or an F5 on the
+ * kiosk costs nothing upstream at all.
+ *
+ * There is no `apiKey` parameter any more, and deliberately no way to pass one:
+ * the credential exists only inside worker/.
  */
 export async function fetchSolarEdgeAccountData(
-  apiKey: string,
   options: FetchAccountDataOptions = {}
 ): Promise<FetchSitesResult> {
   const {
@@ -631,7 +610,7 @@ export async function fetchSolarEdgeAccountData(
     signal,
   } = options;
 
-  // 1a. Mock mode - simulated figures are the point here.
+  // 1. Mock mode — simulated figures are the point here.
   if (useMock) {
     const mockOverviews: Record<number, SolarEdgeTransformedOverview> = {};
     MOCK_SOLAREDGE_SITES.forEach((site) => {
@@ -643,22 +622,7 @@ export async function fetchSolarEdgeAccountData(
       overviews: mockOverviews,
       isUsingCache: false,
       quota: getDailyQuotaInfo(),
-    };
-  }
-
-  // 1b. Live mode with no API key yet.
-  //
-  // The old condition was `useMock || !apiKey.trim()`, so switching to Live
-  // before entering a key silently served the full mock dataset - the dashboard
-  // claimed "SolarEdge Live API" while showing invented numbers. Live mode with
-  // no credentials now returns nothing, and every tile reads "no data".
-  if (!apiKey.trim()) {
-    return {
-      sites: [],
-      overviews: {},
-      isUsingCache: false,
-      quota: getDailyQuotaInfo(),
-      error: 'ยังไม่ได้กรอก SolarEdge API Key',
+      backend: null,
     };
   }
 
@@ -674,6 +638,7 @@ export async function fetchSolarEdgeAccountData(
       overviews: cachedOverviews.data,
       isUsingCache: true,
       quota: getDailyQuotaInfo(),
+      backend: null,
     };
   }
 
@@ -690,50 +655,75 @@ export async function fetchSolarEdgeAccountData(
         overviews: cachedOverviews.data,
         isUsingCache: true,
         quota: currentQuota,
+        backend: null,
         error: 'โควตา SolarEdge API ใกล้หมด กำลังแสดงข้อมูลจากแคช',
       };
     }
   }
 
   try {
-    // Step 1: site list. Reused from cache after the first successful fetch,
-    // because the set of sites does not change during an event.
-    let sites: SolarEdgeRawSite[];
-    if (cachedSites && cachedSites.length > 0 && !forceRefresh) {
-      sites = cachedSites;
-    } else {
-      const sitesQuery = `/sites/list?size=5&api_key=${encodeURIComponent(apiKey.trim())}`;
-      incrementDailyCallCount(1);
-      const sitesRes = await fetchSolarEdgeApi(sitesQuery, { signal });
+    incrementDailyCallCount(1);
+    const payload = await fetchBackend(forceRefresh ? '/overview?refresh=1' : '/overview', {
+      signal,
+    });
 
-      if (!sitesRes.ok) {
-        throw new Error(
-          `SolarEdge Sites List API error (HTTP ${sitesRes.status}): ${sitesRes.statusText}`
-        );
+    const sites = payload.sites ?? [];
+    if (sites.length === 0) {
+      throw new BackendError('Backend ไม่ได้ส่งรายชื่อไซต์กลับมา', 502);
+    }
+
+    // Transform every overview the backend actually returned. A site the
+    // backend could not read is simply ABSENT here — never a simulated
+    // stand-in — so its pin renders "ไม่มีข้อมูล" instead of a fabrication.
+    const overviewsRecord: Record<number, SolarEdgeTransformedOverview> = {};
+    sites.forEach((site) => {
+      const raw = payload.overviews?.[String(site.id)];
+      if (!raw) return;
+      const transformed = transformSolarEdgeOverview(
+        site.id,
+        site.name,
+        site.peakPower,
+        site.status,
+        raw,
+        false
+      );
+
+      const curve = payload.powerSeries?.[String(site.id)];
+      if (curve?.length) {
+        transformed.powerCurveToday = curve.map((p) => ({
+          timestamp: p.t,
+          powerKw: Math.round((p.w / 1000) * 10) / 10,
+        }));
       }
 
-      const sitesData: SolarEdgeSitesListResponse = await sitesRes.json();
-      sites = sitesData.sites?.site || [];
+      overviewsRecord[site.id] = transformed;
+    });
+
+    // Only persist a round that produced at least one reading. Caching a total
+    // outage would hand the next reload an empty dashboard for 4.5 minutes.
+    if (Object.keys(overviewsRecord).length > 0) {
+      writeCache(sites, overviewsRecord);
     }
 
-    if (sites.length === 0) {
-      throw new Error('ไม่พบไซต์ SolarEdge ในบัญชี API Key นี้');
-    }
+    const quota = getDailyQuotaInfo();
+    quota.upstreamCallsToday = payload.upstreamCallsToday ?? null;
 
-    // Step 2: overviews — one bulk call, per-site loop only as a fallback.
-    let overviewsRecord = await fetchOverviewsBulk(apiKey, sites, { signal });
-    if (!overviewsRecord) {
-      overviewsRecord = await fetchOverviewsPerSite(apiKey, sites, { signal });
-    }
-
-    // Step 3: persist the SWR cache
-    writeCache(sites, overviewsRecord);
+    // Per-site failures are surfaced, not swallowed: two green pins and one
+    // silent gap is exactly the state somebody needs to be told about.
+    const siteErrors = payload.errors ?? [];
+    const errorMsg = payload.staleReason
+      ? `Backend กำลังเสิร์ฟข้อมูลล่าสุดที่ยังใช้ได้ (${payload.staleReason})`
+      : siteErrors.length > 0
+        ? `ดึงข้อมูลไม่สำเร็จ ${siteErrors.length} ไซต์: ${siteErrors.map((e) => e.siteId).join(', ')}`
+        : undefined;
 
     return {
       sites,
       overviews: overviewsRecord,
-      isUsingCache: false,
-      quota: getDailyQuotaInfo(),
+      isUsingCache: payload.fromCache === true,
+      quota,
+      backend: backendStatusFrom(payload, true),
+      error: errorMsg,
     };
   } catch (error) {
     // A cancelled poll is normal (unmount / config change) — surface it so the
@@ -743,8 +733,8 @@ export async function fetchSolarEdgeAccountData(
     }
 
     const errorMsg =
-      error instanceof Error ? error.message : 'เกิดข้อผิดพลาดในการเชื่อมต่อ SolarEdge API';
-    console.error('SolarEdge Live Fetch failed:', errorMsg);
+      error instanceof Error ? error.message : 'เกิดข้อผิดพลาดในการเชื่อมต่อ SolarEdge backend';
+    console.error('SolarEdge backend fetch failed:', errorMsg);
 
     // Prefer the last good data over nothing: on a live dashboard a
     // five-minute-old real reading is still a real reading.
@@ -754,27 +744,76 @@ export async function fetchSolarEdgeAccountData(
         overviews: cachedOverviews.data,
         isUsingCache: true,
         quota: getDailyQuotaInfo(),
+        backend: unreachableBackend(errorMsg),
         error: errorMsg,
       };
     }
 
     // NO MOCK FALLBACK IN LIVE MODE.
     //
-    // This used to return MOCK_SOLAREDGE_SITES with simulated overviews, so a
-    // failed connection produced a dashboard full of confident, entirely
-    // invented figures - indistinguishable from real ones on a 72" screen.
-    // Live mode now reports emptiness honestly and the UI renders "no data".
-    // Simulated numbers are only ever produced when mock mode is explicitly on.
+    // A failed connection used to produce a dashboard full of confident,
+    // entirely invented figures — indistinguishable from real ones on a 72"
+    // screen. Live mode reports emptiness honestly and the UI renders
+    // "ไม่มีข้อมูล". Simulated numbers appear only when mock mode is explicitly on.
     return {
       sites: [],
       overviews: {},
       isUsingCache: false,
       quota: getDailyQuotaInfo(),
+      backend: unreachableBackend(errorMsg),
       error: errorMsg,
     };
   }
 }
- 
+
+/**
+ * Ask the backend for its own diagnostics (token TTL, configured site IDs).
+ *
+ * Used by the settings modal only, so a routine poll never pays for it.
+ */
+export async function fetchBackendHealth(
+  options: SolarEdgeRequestOptions = {}
+): Promise<SolarEdgeBackendStatus> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/health`, {
+      headers: { Accept: 'application/json' },
+      signal: options.signal,
+    });
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('json')) {
+      return unreachableBackend(
+        'Backend ไม่ตอบกลับเป็น JSON — ยังไม่ได้รัน worker/ หรือ proxy ตั้งค่าไม่ถูกต้อง'
+      );
+    }
+
+    const body = (await res.json()) as {
+      ok?: boolean;
+      siteIds?: number[];
+      sites?: SolarEdgeSiteStatus[];
+      upstreamCallsToday?: number;
+      message?: string;
+      error?: string;
+    };
+
+    if (!res.ok || body.ok !== true) {
+      return unreachableBackend(body.message || body.error || `Backend HTTP ${res.status}`);
+    }
+
+    return {
+      reachable: true,
+      siteIds: body.siteIds ?? [],
+      sites: body.sites ?? [],
+      siteErrors: [],
+      staleReason: null,
+      message: body.message ?? null,
+    };
+  } catch (err) {
+    if (options.signal?.aborted) throw err;
+    return unreachableBackend('ติดต่อ backend ไม่ได้ — ตรวจสอบว่ารัน `npm run worker` อยู่หรือไม่');
+  }
+}
+
 // -------------------------------------------------------------
 // Part 3: Building ↔ Site Mapping Persistence
 // -------------------------------------------------------------
@@ -782,47 +821,39 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
   try {
     const raw = localStorage.getItem(STORAGE_KEY_BINDINGS);
     if (!raw) {
-      // Default sample bindings for 5 MEA Solar Roof Regional Sites
+      // Default bindings.
+      //
+      // Only the three buildings with a real SolarEdge site ID are bound.
+      // สุราษฎร์ธานี (1) and ภูเก็ต (2) have no site provisioned yet, so binding
+      // them to a placeholder would put invented numbers on stage under a
+      // "Live API" badge. Unbound, they render "ไม่มีข้อมูล" in live mode and
+      // still show their simulated figures in mock mode. Add an entry here the
+      // day their IDs are issued — nothing else needs to change.
+      const now = new Date().toISOString();
       const defaultBindings: Record<number, BuildingSiteBinding> = {
-        1: {
-          buildingId: 1,
-          siteId: 2849101,
-          siteName: 'MEA Solar Roof - สุราษฎร์ธานี',
-          primaryMetric: 'currentPower',
-          isBound: true,
-          boundAt: new Date().toISOString(),
-        },
-        2: {
-          buildingId: 2,
-          siteId: 2849102,
-          siteName: 'MEA Solar Roof - ภูเก็ต',
-          primaryMetric: 'currentPower',
-          isBound: true,
-          boundAt: new Date().toISOString(),
-        },
         3: {
           buildingId: 3,
-          siteId: 2849103,
+          siteId: LIVE_SITE_IDS.TRANG,
           siteName: 'MEA Solar Roof - ตรัง',
           primaryMetric: 'currentPower',
           isBound: true,
-          boundAt: new Date().toISOString(),
+          boundAt: now,
         },
         4: {
           buildingId: 4,
-          siteId: 2849104,
+          siteId: LIVE_SITE_IDS.HATYAI,
           siteName: 'MEA Solar Roof - หาดใหญ่',
           primaryMetric: 'currentPower',
           isBound: true,
-          boundAt: new Date().toISOString(),
+          boundAt: now,
         },
         5: {
           buildingId: 5,
-          siteId: 2849105,
+          siteId: LIVE_SITE_IDS.PATTANI,
           siteName: 'MEA Solar Roof - ปัตตานี',
           primaryMetric: 'currentPower',
           isBound: true,
-          boundAt: new Date().toISOString(),
+          boundAt: now,
         },
       };
       return defaultBindings;

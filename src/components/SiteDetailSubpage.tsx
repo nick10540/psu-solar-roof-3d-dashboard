@@ -85,12 +85,42 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   const fleetCapacityKwp = useMemo(() => totalInstalledKwp(allSites), [allSites]);
   const capacityRatio = fleetCapacityKwp > 0 ? site.capacityKwp / fleetCapacityKwp : 0;
   
-  const siteDayData = useMemo(() => dayData.map((d) => ({
-    ...d,
-    powerKw: Math.round(d.powerKw * capacityRatio * 10) / 10,
-    clearSkyPotentialKw: Math.round(d.clearSkyPotentialKw * capacityRatio * 10) / 10,
-    energyKwh: Math.round(d.energyKwh * capacityRatio * 10) / 10,
-  })), [dayData, capacityRatio]);
+  /**
+   * Today's curve: the site's own measurements when the backend has them,
+   * otherwise the shared simulation scaled by this site's share of the fleet.
+   *
+   * The measured series is quarter-hourly and stops at the last reported
+   * sample, so the line ends where the data does rather than running flat to
+   * midnight.
+   */
+  const measuredCurve = overview?.powerCurveToday;
+
+  const siteDayData = useMemo(() => {
+    if (measuredCurve?.length) {
+      return measuredCurve.map((p) => {
+        const at = new Date(p.timestamp);
+        return {
+          timestamp: p.timestamp,
+          timeLabel: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
+          powerKw: p.powerKw,
+          // Not measured. Zero keeps the chart's own maths safe; nothing draws
+          // these while a measured curve is in play.
+          clearSkyPotentialKw: 0,
+          energyKwh: 0,
+          irradianceWm2: 0,
+          ambientTempC: 0,
+          moduleTempC: 0,
+        };
+      });
+    }
+
+    return dayData.map((d) => ({
+      ...d,
+      powerKw: Math.round(d.powerKw * capacityRatio * 10) / 10,
+      clearSkyPotentialKw: Math.round(d.clearSkyPotentialKw * capacityRatio * 10) / 10,
+      energyKwh: Math.round(d.energyKwh * capacityRatio * 10) / 10,
+    }));
+  }, [measuredCurve, dayData, capacityRatio]);
 
   const siteWeekData = useMemo(() => weekData.map((d) => ({
     ...d,
@@ -109,14 +139,33 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
     energyKwh: Math.round(d.energyKwh * capacityRatio * 10) / 10,
   })), [yearData, capacityRatio]);
 
-  const currentDataset = 
+  const currentDataset =
     selectedTimeRange === 'day' ? siteDayData :
     selectedTimeRange === 'week' ? siteWeekData :
     selectedTimeRange === 'month' ? siteMonthData : siteYearData;
 
+  /** Is the range on screen drawn from measurements rather than simulation? */
+  const isMeasuredRange = selectedTimeRange === 'day' && !!measuredCurve?.length;
+
   const currentPowerKw = overview ? overview.currentPowerKw : site.currentPowerKw;
   const todayEnergyKwh = overview ? overview.dailyEnergyKwh : site.todayEnergyKwh;
   const lifetimeEnergyKwh = overview ? overview.lifetimeEnergyKwh : site.lifetimeEnergyKwh;
+
+  /**
+   * Is this page showing measured data?
+   *
+   * When it is, anything we cannot measure must NOT fall back to the building's
+   * mock figures. The headline numbers were already live while the capacity,
+   * panel count, chart and inverter panel below stayed simulated — so the page
+   * showed 380 kWp for a site the API reports as 1500 kWp, under a real
+   * production figure. Mixed provenance is worse than either alone: it makes
+   * the invented parts look verified.
+   */
+  const isLive = !!overview && !overview.isMockData;
+
+  // Capacity comes from the API once live — site.capacityKwp is a hand-entered
+  // estimate and was wrong by a factor of ~4 on every site.
+  const capacityKwp = isLive ? overview!.peakPowerKwp : site.capacityKwp;
 
   const lifetimeFormatted = lifetimeEnergyKwh >= 10000 
     ? `${(lifetimeEnergyKwh / 1000).toFixed(1)} MWh` 
@@ -269,11 +318,13 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <ShieldCheck className="w-4 h-4 text-blue-400" />
           </div>
           <div className="text-2xl sm:text-3xl font-black font-mono text-white tracking-tight flex items-baseline gap-1">
-            <span>{site.capacityKwp.toFixed(0)}</span>
+            <span>{capacityKwp.toFixed(0)}</span>
             <span className="text-xs font-normal text-blue-300/80">kWp</span>
           </div>
           <div className="text-[10px] text-slate-300 mt-1 flex items-center justify-between">
-            <span>{site.panelCount} แผง PV</span>
+            {/* Panel count is not in the API — showing the hand-entered figure
+                next to a live capacity would imply it was measured too. */}
+            <span>{isLive ? 'จาก SolarEdge API' : `${site.panelCount} แผง PV`}</span>
             <button
               onClick={() => onOpenBindingModal(site)}
               className="text-amber-300 font-bold underline hover:text-amber-200 cursor-pointer"
@@ -293,6 +344,20 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <div className="flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-sky-400" />
               <h3 className="font-bold text-sm text-white">กราฟกำลังการผลิตไฟฟ้า Solar Roof ({site.name})</h3>
+              {/* Only the daily curve is measured. The other ranges are still a
+                  shared simulation scaled by capacity, and on a live page that
+                  has to be labelled or it reads as data. */}
+              {isLive && (
+                <span
+                  className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                    isMeasuredRange
+                      ? 'text-emerald-300 bg-emerald-950/50 border-emerald-600/40'
+                      : 'text-amber-300 bg-amber-950/50 border-amber-600/40'
+                  }`}
+                >
+                  {isMeasuredRange ? 'วัดจริง' : 'จำลอง'}
+                </span>
+              )}
             </div>
 
             {/* Time Range Pills */}
@@ -456,15 +521,36 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
           <div className="flex items-center justify-between pb-2 border-b border-slate-800">
             <div className="flex items-center gap-2">
               <Cpu className="w-4 h-4 text-amber-400" />
-              <h3 className="font-bold text-sm text-white">อินเวอร์เตอร์ SolarEdge ({site.inverterCount} เครื่อง)</h3>
+              <h3 className="font-bold text-sm text-white">
+                อินเวอร์เตอร์ SolarEdge{!isLive && ` (${site.inverterCount} เครื่อง)`}
+              </h3>
             </div>
-            <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3" />
-              ทำงานปกติ
-            </span>
+            {!isLive && (
+              <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
+                ทำงานปกติ
+              </span>
+            )}
           </div>
 
+          {/* Device-level telemetry needs the DEVICE_DATA scope and per-inverter
+              endpoints; this dashboard reads site-level figures only. Showing
+              the mock inverters here put four invented serial numbers, string
+              voltages and currents on screen underneath live production —
+              the most convincing fabrication on the whole page. */}
+          {isLive && (
+            <div className="flex-1 flex flex-col items-center justify-center text-center gap-2 py-8">
+              <Cpu className="w-8 h-8 text-slate-700" />
+              <div className="text-xs text-slate-400 font-medium">ไม่มีข้อมูลระดับอุปกรณ์</div>
+              <p className="text-[10px] text-slate-500 leading-snug max-w-[15rem]">
+                ข้อมูลรายอินเวอร์เตอร์และ PV String ต้องใช้สิทธิ์ <span className="font-mono text-slate-400">DEVICE_DATA</span>{' '}
+                ซึ่งยังไม่ได้เปิดใช้ — ตอนนี้ดึงเฉพาะข้อมูลระดับไซต์
+              </p>
+            </div>
+          )}
+
           {/* Inverter Selector Tabs */}
+          {!isLive && (
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {site.inverters.map((inv, idx) => (
               <button
@@ -480,9 +566,10 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
               </button>
             ))}
           </div>
+          )}
 
           {/* Active Inverter Telemetry Details */}
-          {selectedInverter && (
+          {!isLive && selectedInverter && (
             <div className="bg-slate-900/80 p-3 rounded-xl border border-sky-500/20 flex flex-col gap-2.5">
               <div className="flex items-center justify-between text-xs pb-1 border-b border-slate-800">
                 <span className="text-slate-300 font-semibold">{selectedInverter.model}</span>

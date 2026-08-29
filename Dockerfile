@@ -14,10 +14,10 @@ COPY . .
 RUN npm run build
 
 # ---------------------------------------------------------------------------
-# Serve stage: the dashboard is a fully client-side SPA (SolarEdge is called
-# straight from the browser, building data lives in localStorage - see
-# src/services/solarEdgeService.ts and buildingStorageService.ts), so a
-# static file server is all production needs. No Node/Express runtime.
+# Serve stage: nginx serves the built SPA and reverse-proxies /api/solaredge to
+# the backend container (Dockerfile.worker), which holds the SolarEdge API
+# key. Building data still lives in localStorage - see
+# buildingStorageService.ts. See docker/nginx.conf and docker-compose.yml.
 # ---------------------------------------------------------------------------
 FROM nginx:1.27-alpine AS serve
 

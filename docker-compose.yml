@@ -1,4 +1,6 @@
 services:
+  # Static SPA + reverse proxy. The browser only ever talks to this service, so
+  # /api/solaredge stays same-origin and the backend is never exposed directly.
   psu-solar-roof-dashboard:
     build:
       context: .
@@ -6,6 +8,8 @@ services:
     container_name: psu-solar-roof-dashboard
     ports:
       - "3001:3001"
+    depends_on:
+      - solaredge-backend
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/"]
@@ -13,3 +17,23 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # SolarEdge backend. Holds the Fleet API Key;
+  # deliberately has NO published port — nginx reaches it over the compose
+  # network, and nothing outside the stack can.
+  solaredge-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: psu-solar-solaredge-backend
+    restart: unless-stopped
+    environment:
+      SOLAREDGE_API_KEY: ${SOLAREDGE_API_KEY:?set SOLAREDGE_API_KEY in .env}
+      SOLAREDGE_SITE_IDS: ${SOLAREDGE_SITE_IDS:-4956359,4821237,4947126}
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8787/api/solaredge/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+

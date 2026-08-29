@@ -15,11 +15,14 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {
+        // Points at the local SolarEdge backend (worker/), NOT at SolarEdge.
+        // The OAuth client id / secret live in that process, so the browser
+        // only ever talks to this origin and no credential reaches the bundle.
+        // Start it with `npm run worker` (or `npm run dev:all`).
         '/api/solaredge': {
-          target: 'https://monitoringapi.solaredge.com',
-          changeOrigin: true,
-          secure: true,
-          rewrite: (path) => path.replace(/^\/api\/solaredge/, ''),
+          target: process.env.SOLAREDGE_BACKEND_URL || 'http://localhost:8787',
+          changeOrigin: false,
+          secure: false,
         },
       },
     },
