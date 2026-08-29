@@ -118,9 +118,6 @@ export default function App() {
   const [bindings, setBindings] = useState<Record<number, BuildingSiteBinding>>(loadBuildingSiteBindings);
   const [isSolarEdgeLoading, setIsSolarEdgeLoading] = useState<boolean>(false);
 
-  // Presentation States
-  const [isZenMode, setIsZenMode] = useState<boolean>(false);
-
   // Time & Chart States
   const [timeRange] = useState<TimeRange>('day');
   const [timeOfDayHour, setTimeOfDayHour] = useState<number>(10.5); // 10:30 AM
@@ -475,7 +472,6 @@ export default function App() {
   // Stable props for the map — an inline arrow here rebuilds the whole map.
   const handleOpenAddModal = useCallback(() => setIsAddBuildingModalOpen(true), []);
   const handleOpenDeleteDialog = useCallback((bld: BuildingInfo) => setDeleteCandidateBuilding(bld), []);
-  const handleToggleZenMode = useCallback(() => setIsZenMode((v) => !v), []);
   const handleToggleLiveSimulation = useCallback(() => setIsLiveSimulation((v) => !v), []);
   const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), []);
   const handleCloseSettings = useCallback(() => setIsSettingsOpen(false), []);
@@ -508,17 +504,10 @@ export default function App() {
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col p-2 sm:p-2.5 gap-2 font-['Prompt',sans-serif] select-none">
-      {/* 1. Top Header Bar (MEA SOLAR ROOF Branding & Navigation) */}
+      {/* 1. Top Header Bar (System Title & Status Widgets) */}
       <HeaderBar
         weather={weather}
         config={config}
-        navigationMode={navigationMode}
-        onNavigateToMainMap={handleBackToMainMap}
-        selectedBuilding={selectedBuilding}
-        buildings={buildings}
-        onSelectSite={handleNavigateToSubpage}
-        isZenMode={isZenMode}
-        onToggleZenMode={handleToggleZenMode}
         onOpenSettings={handleOpenSettings}
         isLiveSimulation={isLiveSimulation}
         onToggleLiveSimulation={handleToggleLiveSimulation}

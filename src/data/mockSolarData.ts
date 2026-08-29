@@ -71,7 +71,7 @@ export const PSU_ALL_BUILDINGS: BuildingInfo[] = [
   {
     id: 1,
     code: 'MEA-SRT-01',
-    name: 'สุราษฎร์ธานี',
+    name: 'วิทยาเขตสุราษฎร์ธานี',
     shortName: 'สุราษฎร์ธานี',
     enName: 'MEA Solar Roof - Surat Thani Site',
     province: 'สุราษฎร์ธานี',
@@ -142,7 +142,7 @@ export const PSU_ALL_BUILDINGS: BuildingInfo[] = [
   {
     id: 2,
     code: 'MEA-PKT-02',
-    name: 'ภูเก็ต',
+    name: 'วิทยาเขตภูเก็ต',
     shortName: 'ภูเก็ต',
     enName: 'MEA Solar Roof - Phuket Site',
     province: 'ภูเก็ต',
@@ -227,7 +227,7 @@ export const PSU_ALL_BUILDINGS: BuildingInfo[] = [
   {
     id: 3,
     code: 'MEA-TRG-03',
-    name: 'ตรัง',
+    name: 'วิทยาเขตตรัง',
     shortName: 'ตรัง',
     enName: 'MEA Solar Roof - Trang Site',
     province: 'ตรัง',
@@ -297,7 +297,7 @@ export const PSU_ALL_BUILDINGS: BuildingInfo[] = [
   {
     id: 4,
     code: 'MEA-HDY-04',
-    name: 'หาดใหญ่',
+    name: 'วิทยาเขตหาดใหญ่',
     shortName: 'หาดใหญ่',
     enName: 'MEA Solar Roof - Hatyai Site',
     province: 'สงขลา',
@@ -382,7 +382,7 @@ export const PSU_ALL_BUILDINGS: BuildingInfo[] = [
   {
     id: 5,
     code: 'MEA-PTN-05',
-    name: 'ปัตตานี',
+    name: 'วิทยาเขตปัตตานี',
     shortName: 'ปัตตานี',
     enName: 'MEA Solar Roof - Pattani Site',
     province: 'ปัตตานี',
