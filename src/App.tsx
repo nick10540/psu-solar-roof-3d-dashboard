@@ -59,8 +59,7 @@ import {
   saveBuildingSiteBinding,
   getDailyQuotaInfo,
   MOCK_SOLAREDGE_SITES,
-  fetchBackendHealth,
-  exchangeAuthorizationCode
+  fetchBackendHealth
 } from './services/solarEdgeService';
 import {
   saveBuildingCoords,
@@ -121,7 +120,7 @@ export default function App() {
   const [bindings, setBindings] = useState<Record<number, BuildingSiteBinding>>(loadBuildingSiteBindings);
   const [isSolarEdgeLoading, setIsSolarEdgeLoading] = useState<boolean>(false);
 
-  // Backend / OAuth diagnostics. With credentials server-side there is nothing
+  // Backend diagnostics. With the API key server-side there is nothing
   // for the operator to type any more, so the settings modal shows the state of
   // the connection instead of a key field.
   const [backendStatus, setBackendStatus] = useState<SolarEdgeBackendStatus | null>(null);
@@ -179,7 +178,7 @@ export default function App() {
       if (!silent) setIsSolarEdgeLoading(true);
 
       try {
-        // No credential argument: the OAuth client id / secret live in worker/
+        // No credential argument: the SolarEdge API key lives in worker/
         // and never reach the browser. This call goes to /api/solaredge.
         const res = await fetchSolarEdgeAccountData({
           forceRefresh,
@@ -279,70 +278,6 @@ export default function App() {
   const handleCheckBackend = useCallback(async () => {
     const status = await fetchBackendHealth();
     if (mountedRef.current) setBackendStatus(status);
-  }, []);
-
-  // ---------------------------------------------------------------------------
-  // 1b. SolarEdge Connect callback
-  //
-  // SolarEdge returns the operator to the app's DEFAULT Redirect URL — this
-  // dashboard's own origin — carrying `?code=…&site_id=…`. A grant covers ONE
-  // site, so `site_id` says which one was just authorized and the backend keys
-  // the tokens by it. Handing the code straight over makes the whole setup
-  // "click Approve"; no terminal step.
-  //
-  // Runs on mount and strips both params from the address bar immediately: an
-  // authorization code is single-use, and leaving it in history or in a
-  // screenshot of the kiosk helps nobody.
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get('code');
-    const siteIdRaw = params.get('site_id');
-    if (!code) return;
-
-    params.delete('code');
-    params.delete('site_id');
-    params.delete('external_id');
-    params.delete('state');
-    const cleaned = params.toString();
-    window.history.replaceState(
-      {},
-      '',
-      `${window.location.pathname}${cleaned ? `?${cleaned}` : ''}`
-    );
-
-    const siteId = Number(siteIdRaw);
-    if (!siteIdRaw || !Number.isFinite(siteId)) {
-      // Without site_id there is nothing to key the grant to, and guessing
-      // would attach it to the wrong site.
-      setSolarEdgeError('SolarEdge ไม่ได้ส่ง site_id กลับมา — ลองกดเชื่อมต่อใหม่อีกครั้ง');
-      setIsSettingsOpen(true);
-      return;
-    }
-
-    let cancelled = false;
-    void exchangeAuthorizationCode(code, siteId).then((result) => {
-      if (cancelled || !mountedRef.current) return;
-
-      if (result.ok) {
-        setSolarEdgeError(null);
-        // Switch to live data and refresh at once rather than leaving the
-        // operator on mock figures wondering whether it worked.
-        setConfig((prev) => ({ ...prev, useMock: false, isConnected: true }));
-        void handleCheckBackend();
-        // More sites still to authorize — keep the panel open so the next
-        // "เชื่อมต่อ" button is right there.
-        if (result.pendingSiteIds.length > 0) setIsSettingsOpen(true);
-      } else {
-        setSolarEdgeError(result.message);
-        setIsSettingsOpen(true); // surface the failure where it can be acted on
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---------------------------------------------------------------------------

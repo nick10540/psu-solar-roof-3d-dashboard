@@ -4,17 +4,15 @@
  * ---------------------------------------------------------------------------
  * THE BROWSER NO LONGER TALKS TO SOLAREDGE.
  *
- * SolarEdge retired the `?api_key=` scheme in favour of OAuth2
- * client_credentials, which means a long-lived CLIENT_ID / CLIENT_SECRET pair
- * that must never reach a browser bundle. Everything credential-shaped now
- * lives in the backend under worker/:
+ * SolarEdge retired the `?api_key=` scheme. The replacement is a Fleet API
+ * Key sent as a header — a long-lived credential that must never reach a
+ * browser bundle. It lives in the backend under worker/:
  *
- *   browser  ──GET /api/solaredge/overview──▶  worker/  ──Bearer token──▶  SolarEdge
+ *   browser  ──GET /api/solaredge/overview──▶  worker/  ──X-API-Key──▶  SolarEdge
  *
- * The backend exchanges the client credentials for a ~1 hour access token,
- * caches it, refreshes it before expiry, and calls the data API with an
- * `Authorization: Bearer` header. This file is now purely: fetch that one
- * endpoint, cache, transform units, and persist bindings.
+ * The backend assembles each site's readings from the v2 series endpoints and
+ * hands back one payload. This file is now purely: fetch that one endpoint,
+ * cache, transform units, and persist bindings.
  * ---------------------------------------------------------------------------
  *
  * Features:
@@ -34,7 +32,7 @@ import {
   SolarEdgeTransformedOverview,
   SolarEdgeQuotaInfo,
   SolarEdgeBackendStatus,
-  SolarEdgeSiteAuthStatus,
+  SolarEdgeSiteStatus,
   BuildingSiteBinding
 } from '../types';
 
@@ -72,7 +70,7 @@ export interface SolarEdgeRequestOptions {
 interface BackendOverviewPayload {
   sites: SolarEdgeRawSite[];
   overviews: Record<string, SolarEdgeOverviewResponse['overview']>;
-  errors?: Array<{ siteId: number; message: string; status?: number; needsAuthorization?: boolean }>;
+  errors?: Array<{ siteId: number; message: string; status?: number }>;
   fetchedAt: number;
   fromCache: boolean;
   upstreamCallsToday: number;
@@ -143,7 +141,7 @@ async function fetchBackend(
 
 // LocalStorage Keys.
 //
-// Bumped to v5 with the OAuth migration: a v4 cache holds overviews keyed by
+// Bumped to v5 with the v2 migration: a v4 cache holds overviews keyed by
 // the old placeholder site IDs, and a v4 binding map points buildings at them.
 // Left in place they would quietly shadow the real 4956359 / 4821237 / 4947126
 // readings on every machine that has run the previous build.
@@ -506,7 +504,7 @@ export interface FetchSitesResult {
   overviews: Record<number, SolarEdgeTransformedOverview>;
   isUsingCache: boolean;
   quota: SolarEdgeQuotaInfo;
-  /** Backend / OAuth diagnostics for the settings modal. Null in mock mode. */
+  /** Backend diagnostics for the settings modal. Null in mock mode. */
   backend: SolarEdgeBackendStatus | null;
   error?: string;
 }
@@ -565,20 +563,13 @@ function backendStatusFrom(
   reachable: boolean,
   message: string | null = null
 ): SolarEdgeBackendStatus {
-  const siteIds = payload.sites.map((s) => s.id);
   return {
     reachable,
-    siteIds,
-    // Per-site authorization comes from /health; a data poll has no need to
-    // ask, so leave it empty and let the caller merge in the last known state.
+    siteIds: payload.sites.map((s) => s.id),
+    // The site list comes from /health; a data poll has no need to ask, so
+    // leave it empty and let the caller keep the last known list.
     sites: [],
-    authorizedCount: 0,
-    totalSites: siteIds.length,
-    siteErrors: (payload.errors ?? []).map((e) => ({
-      siteId: e.siteId,
-      message: e.message,
-      needsAuthorization: e.needsAuthorization,
-    })),
+    siteErrors: (payload.errors ?? []).map((e) => ({ siteId: e.siteId, message: e.message })),
     staleReason: payload.staleReason ?? null,
     message,
   };
@@ -589,8 +580,6 @@ function unreachableBackend(message: string): SolarEdgeBackendStatus {
     reachable: false,
     siteIds: [],
     sites: [],
-    authorizedCount: 0,
-    totalSites: 0,
     siteErrors: [],
     staleReason: null,
     message,
@@ -607,7 +596,7 @@ function unreachableBackend(message: string): SolarEdgeBackendStatus {
  * kiosk costs nothing upstream at all.
  *
  * There is no `apiKey` parameter any more, and deliberately no way to pass one:
- * the credential is an OAuth client secret that exists only inside worker/.
+ * the credential exists only inside worker/.
  */
 export async function fetchSolarEdgeAccountData(
   options: FetchAccountDataOptions = {}
@@ -765,111 +754,6 @@ export async function fetchSolarEdgeAccountData(
   }
 }
 
-export interface AuthExchangeResult {
-  ok: boolean;
-  message: string;
-  /** Sites still needing their own trip through the consent screen. */
-  pendingSiteIds: number[];
-}
-
-/**
- * Finish the one-time authorization.
- *
- * SolarEdge's registered redirect URI is the dashboard's own origin
- * (http://localhost:3000), so consent lands the operator back here with
- * `?code=…` in the address bar. Handing that straight to the backend means the
- * whole setup is "click allow" — no terminal, no copy-pasting a code into curl,
- * and no chance of the code being pasted somewhere it shouldn't be.
- *
- * The code itself is single-use and short-lived; it goes to our own origin and
- * is never stored.
- */
-export async function exchangeAuthorizationCode(
-  code: string,
-  siteId: number,
-  options: SolarEdgeRequestOptions = {}
-): Promise<AuthExchangeResult> {
-  try {
-    const res = await fetch(
-      `${BACKEND_BASE_URL}/auth/exchange?code=${encodeURIComponent(code)}&site_id=${encodeURIComponent(String(siteId))}`,
-      { headers: { Accept: 'application/json' }, signal: options.signal }
-    );
-
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('json')) {
-      return { ok: false, message: 'Backend ไม่ตอบกลับเป็น JSON — ยังไม่ได้รัน worker/', pendingSiteIds: [] };
-    }
-
-    const body = (await res.json()) as {
-      ok?: boolean;
-      message?: string;
-      error?: string;
-      detail?: string;
-      pendingSiteIds?: number[];
-    };
-
-    if (!res.ok || body.ok !== true) {
-      return {
-        ok: false,
-        message: [body.message, body.detail].filter(Boolean).join(' — ') || `HTTP ${res.status}`,
-        pendingSiteIds: [],
-      };
-    }
-
-    return {
-      ok: true,
-      message: body.message || 'เชื่อมต่อ SolarEdge สำเร็จ',
-      pendingSiteIds: body.pendingSiteIds ?? [],
-    };
-  } catch (err) {
-    if (options.signal?.aborted) throw err;
-    return {
-      ok: false,
-      message: 'ติดต่อ backend ไม่ได้ระหว่างแลก authorization code',
-      pendingSiteIds: [],
-    };
-  }
-}
-
-/**
- * Ask the backend for the SolarEdge Connect URL to open.
- *
- * Built server-side rather than hard-coded here so the client id — which the
- * consent URL needs but the bundle has no other reason to carry — stays in one
- * place, alongside the secret it belongs with.
- */
-export async function fetchConnectUrl(
-  options: SolarEdgeRequestOptions = {}
-): Promise<{ url: string | null; pendingSiteIds: number[]; message: string | null }> {
-  try {
-    const res = await fetch(`${BACKEND_BASE_URL}/auth/connect-url`, {
-      headers: { Accept: 'application/json' },
-      signal: options.signal,
-    });
-
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('json')) {
-      return { url: null, pendingSiteIds: [], message: 'Backend ไม่ตอบกลับเป็น JSON' };
-    }
-
-    const body = (await res.json()) as {
-      ok?: boolean;
-      url?: string;
-      pendingSiteIds?: number[];
-      message?: string;
-    };
-
-    if (!res.ok || !body.url) {
-      return { url: null, pendingSiteIds: [], message: body.message || `Backend HTTP ${res.status}` };
-    }
-
-    return { url: body.url, pendingSiteIds: body.pendingSiteIds ?? [], message: null };
-  } catch (err) {
-    if (options.signal?.aborted) throw err;
-    return { url: null, pendingSiteIds: [], message: 'ติดต่อ backend ไม่ได้' };
-  }
-}
-
 /**
  * Ask the backend for its own diagnostics (token TTL, configured site IDs).
  *
@@ -894,18 +778,13 @@ export async function fetchBackendHealth(
     const body = (await res.json()) as {
       ok?: boolean;
       siteIds?: number[];
-      sites?: SolarEdgeSiteAuthStatus[];
-      authorizedCount?: number;
-      totalSites?: number;
+      sites?: SolarEdgeSiteStatus[];
       upstreamCallsToday?: number;
       message?: string;
       error?: string;
     };
 
-    // `ok:false` here means "reachable but not fully authorized", which is a
-    // normal state with per-site grants — not an unreachable backend. Treating
-    // it as unreachable would hide the per-site list the operator needs to act.
-    if (!res.ok && !body.sites) {
+    if (!res.ok || body.ok !== true) {
       return unreachableBackend(body.message || body.error || `Backend HTTP ${res.status}`);
     }
 
@@ -913,8 +792,6 @@ export async function fetchBackendHealth(
       reachable: true,
       siteIds: body.siteIds ?? [],
       sites: body.sites ?? [],
-      authorizedCount: body.authorizedCount ?? 0,
-      totalSites: body.totalSites ?? (body.siteIds?.length ?? 0),
       siteErrors: [],
       staleReason: null,
       message: body.message ?? null,

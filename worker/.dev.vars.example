@@ -1,33 +1,17 @@
-# SolarEdge Developer Platform — OAuth2 client credentials.
-# Copy to worker/.dev.vars and fill in. NEVER commit the real values,
-# and never place this file under public/ (Vite copies public/ into dist/).
-SOLAREDGE_CLIENT_ID=your_client_id
-SOLAREDGE_CLIENT_SECRET=your_client_secret
+# Copy to worker/.dev.vars and fill in. NEVER commit the real value, and never
+# place this file under public/ — Vite copies public/ verbatim into dist/.
 
-# Endpoints — confirm against your SolarEdge Developer Platform docs.
-SOLAREDGE_TOKEN_URL=https://monitoringapi.solaredge.com/v2/oauth2/token
-SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
-
+# Fleet API Key from the SolarEdge Developer Platform ("My Fleet Access").
+# One key covers every site in the account's fleet, sent as X-API-Key.
+SOLAREDGE_API_KEY=
 
 # Site IDs the backend is allowed to read.
 #   4956359 = หาดใหญ่ | 4821237 = ตรัง | 4947126 = ปัตตานี
 SOLAREDGE_SITE_IDS=4956359,4821237,4947126
 
+SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
+
 # CORS allow-list. Leave empty for same-origin (behind the Vite/Nginx proxy).
 ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 
 PORT=8787
-
-
-# Per-site refresh tokens. A SolarEdge grant covers ONE site, so there is one
-# token per site. Normally you never set these by hand: click "เชื่อมต่อ
-# SolarEdge" in the dashboard and the backend stores them in .token-store.json.
-#   SOLAREDGE_REFRESH_TOKEN_4956359=...
-#   SOLAREDGE_REFRESH_TOKEN_4821237=...
-#   SOLAREDGE_REFRESH_TOKEN_4947126=...
-
-# --- Fleet API Key (preferred for multi-site accounts) -----------------------
-# SolarEdge Connect refuses to authorize a user who owns more than one site.
-# A Fleet API Key has no consent step, carries all scopes, and covers the whole
-# fleet. When set, the backend uses it INSTEAD of OAuth.
-SOLAREDGE_API_KEY=

@@ -5,14 +5,9 @@
  * ---------------------------------------------------------------------------
  * THERE IS NO API KEY FIELD HERE ANY MORE.
  *
- * SolarEdge moved to a consent-based OAuth app, so the credential is a
- * CLIENT_ID / CLIENT_SECRET pair that lives in worker/ and must never be typed
- * into — or stored by — a browser. What used to be an input is a STATUS panel
- * plus a "connect" button that opens SolarEdge Connect.
- *
- * A grant covers ONE site, so the panel is a per-site checklist: three sites
- * means three trips through the consent screen, and the operator has to be
- * able to see which one is still missing.
+ * The credential is a Fleet API Key that lives in worker/ and must never be
+ * typed into — or stored by — a browser. One key covers every site, so there is
+ * nothing left to configure here: what used to be an input is a STATUS panel.
  * ---------------------------------------------------------------------------
  */
 
@@ -45,7 +40,6 @@ import {
   Lock,
   PlugZap
 } from 'lucide-react';
-import { fetchConnectUrl } from '../services/solarEdgeService';
 
 interface SolarEdgeSettingsModalProps {
   config: SolarEdgeConfig;
@@ -84,7 +78,6 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
   const [formData, setFormData] = useState<SolarEdgeConfig>({ ...config });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
   const handleRefresh = async () => {
@@ -107,33 +100,6 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
       await onCheckBackend();
     } finally {
       setIsChecking(false);
-    }
-  };
-
-  /**
-   * Start the SolarEdge Connect consent trip.
-   *
-   * Opened in a NEW TAB rather than navigating this one: the kiosk holds a live
-   * MapLibre instance with a warmed tile cache, and tearing it down to visit an
-   * external login costs a full WebGL rebuild on return. SolarEdge sends the
-   * operator back to this same origin, where App.tsx picks up ?code&site_id.
-   */
-  const handleConnect = async () => {
-    setIsConnecting(true);
-    setFeedbackMsg(null);
-    try {
-      const { url, message } = await fetchConnectUrl();
-      if (!url) {
-        setFeedbackMsg(message || 'ขอ URL สำหรับเชื่อมต่อไม่สำเร็จ');
-        return;
-      }
-      const opened = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!opened) {
-        // Popup blocked — give them the link rather than failing silently.
-        setFeedbackMsg(`เบราว์เซอร์บล็อกหน้าต่างใหม่ — เปิดลิงก์นี้เอง: ${url}`);
-      }
-    } finally {
-      setIsConnecting(false);
     }
   };
 
@@ -162,12 +128,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
     (config.useMock || sites.every((s) => overviews[s.id]?.isMockData === true));
   const quotaPercentage = Math.min(100, Math.round((quotaInfo.callsMadeToday / quotaInfo.dailyQuotaLimit) * 100));
 
-  // "Healthy" now means every configured site is authorized — with per-site
-  // grants, a reachable backend with one missing site is not a working system.
-  const isBackendHealthy =
-    backendStatus?.reachable === true &&
-    backendStatus.totalSites > 0 &&
-    backendStatus.authorizedCount === backendStatus.totalSites;
+  const isBackendHealthy = backendStatus?.reachable === true;
 
   return (
     <div
@@ -187,9 +148,9 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
               <Key className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white">SolarEdge OAuth Backend & Multi-Site Manager</h3>
+              <h3 className="text-base font-bold text-white">SolarEdge Backend & Multi-Site Manager</h3>
               <p className="text-xs text-slate-400">
-                ดึงข้อมูลผ่าน backend (OAuth2) — หาดใหญ่ / ตรัง / ปัตตานี พร้อมระบบแคชประหยัดโควตา
+                ดึงข้อมูลผ่าน backend (Fleet API Key) — หาดใหญ่ / ตรัง / ปัตตานี พร้อมระบบแคชประหยัดโควตา
               </p>
             </div>
           </div>
@@ -202,7 +163,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
           </button>
         </div>
 
-        {/* 1. Rate Limit & Daily Quota Status Banner (300 calls/day budget) */}
+        {/* 1. How many times the dashboard fetched today (its own counter, plus what the backend spent upstream) */}
         <div className="p-3.5 rounded-2xl bg-slate-900/80 border border-sky-500/30 mb-4 space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -314,12 +275,12 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
             </div>
           </div>
 
-          {/* 3. Backend / OAuth connection status (replaces the old API key field) */}
+          {/* 3. Backend connection status (replaces the old API key field) */}
           {!formData.useMock && (
             <div className="space-y-2">
               <label className="block text-slate-300 font-semibold flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-emerald-400" />
-                <span>การเชื่อมต่อ SolarEdge (OAuth2 — ไม่ต้องกรอกอะไร)</span>
+                <span>การเชื่อมต่อ SolarEdge (Fleet API Key — ไม่ต้องกรอกอะไร)</span>
               </label>
 
               <div
@@ -339,11 +300,9 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                     <span className="font-bold text-white">
                       {!backendStatus
                         ? 'ยังไม่ได้ตรวจสอบ backend'
-                        : !backendStatus.reachable
-                          ? 'ติดต่อ backend ไม่ได้'
-                          : isBackendHealthy
-                            ? `เชื่อมต่อครบทุกไซต์ (${backendStatus.authorizedCount}/${backendStatus.totalSites})`
-                            : `เชื่อมต่อแล้ว ${backendStatus.authorizedCount}/${backendStatus.totalSites} ไซต์`}
+                        : backendStatus.reachable
+                          ? `เชื่อมต่อแล้ว (${backendStatus.sites.length} ไซต์)`
+                          : 'ติดต่อ backend ไม่ได้'}
                     </span>
                   </div>
 
@@ -359,10 +318,8 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                   </button>
                 </div>
 
-                {/* Per-site authorization.
-                    A SolarEdge grant covers ONE site, so this is a checklist,
-                    not a single connected/disconnected flag — and the operator
-                    needs to see exactly which site is still missing. */}
+                {/* The sites this key reads. One fleet key covers all of them,
+                    so this is a list, not a per-site connection checklist. */}
                 {backendStatus?.sites.length ? (
                   <div className="space-y-1">
                     {backendStatus.sites.map((s) => (
@@ -371,69 +328,15 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                         className="flex items-center justify-between gap-2 bg-slate-950/60 rounded-lg px-2 py-1.5 border border-slate-800"
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          {s.authorized ? (
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                          ) : (
-                            <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                          )}
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                           <span className="text-[11px] text-slate-200 truncate">{s.name}</span>
-                          <span className="text-[9px] font-mono text-slate-500 shrink-0">{s.siteId}</span>
                         </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          {s.authorized ? (
-                            <span className="text-[9px] font-mono text-emerald-300">
-                              {s.accessTokenTtlSec != null
-                                ? `token ${Math.floor(s.accessTokenTtlSec / 60)} นาที`
-                                : 'พร้อมใช้'}
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-mono text-amber-300">ยังไม่ได้อนุญาต</span>
-                          )}
-                        </div>
+                        <span className="text-[9px] font-mono text-slate-500 shrink-0">{s.siteId}</span>
                       </div>
                     ))}
                   </div>
                 ) : null}
 
-                {/* The consent trip. Opened in a new tab so the kiosk keeps its
-                    map, WebGL context and tile cache instead of tearing the
-                    whole viewer down and rebuilding it on return. */}
-                {backendStatus?.reachable && !isBackendHealthy && (
-                  <button
-                    type="button"
-                    id="btn-connect-solaredge"
-                    onClick={handleConnect}
-                    disabled={isConnecting}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-slate-950 font-bold transition-colors cursor-pointer text-xs"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    <span>
-                      {isConnecting ? 'กำลังเปิดหน้า SolarEdge...' : 'เชื่อมต่อ SolarEdge (อนุญาตสิทธิ์)'}
-                    </span>
-                  </button>
-                )}
-
-                {backendStatus?.reachable && !isBackendHealthy && (
-                  <>
-                    <p className="text-[10px] text-slate-400 leading-snug">
-                      SolarEdge ให้สิทธิ์ <strong>ทีละ 1 ไซต์</strong> — กดปุ่มนี้ ล็อกอิน แล้วเลือกไซต์ที่ยังไม่ได้เชื่อมต่อ
-                      ทำซ้ำจนครบ {backendStatus.totalSites} ไซต์ ระบบจะพากลับมาที่หน้านี้เองอัตโนมัติ
-                    </p>
-
-                    {/* The failure mode that actually blocks this deployment.
-                        It looks like a bug in our app but is a hard limit on
-                        SolarEdge's side, and the way out is a different
-                        credential entirely — worth saying before someone spends
-                        an hour retrying the same button. */}
-                    <p className="text-[10px] text-amber-300/90 bg-amber-950/30 border border-amber-700/40 rounded-lg px-2 py-1.5 leading-snug">
-                      ถ้า SolarEdge ขึ้นว่า <em>“associated to multiple SolarEdge sites”</em> — บัญชีนั้นมีหลายไซต์
-                      ซึ่ง Connect <strong>ยังไม่รองรับ</strong> ทางออกคือใช้ <strong>Fleet API Key</strong> แทน:
-                      สร้างใน Developer Platform แล้วใส่ที่ <code className="font-mono text-sky-300">SOLAREDGE_API_KEY</code> ใน
-                      <code className="font-mono text-sky-300"> worker/.dev.vars</code> — ครอบคลุมทุกไซต์ ไม่ต้องกด consent เลย
-                    </p>
-                  </>
-                )}
 
                 {/* Per-site upstream failures. Two working pins and one silent
                     gap is exactly the state that needs naming out loud. */}
@@ -463,10 +366,10 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
               </div>
 
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                CLIENT_ID / CLIENT_SECRET เก็บอยู่ที่ <code className="text-sky-300 font-mono">worker/.dev.vars</code> ฝั่งเซิร์ฟเวอร์เท่านั้น
+                Fleet API Key เก็บอยู่ที่ <code className="text-sky-300 font-mono">worker/.dev.vars</code> ฝั่งเซิร์ฟเวอร์เท่านั้น
                 เบราว์เซอร์เรียกแค่ <code className="text-sky-300 font-mono">/api/solaredge/overview</code> แล้ว backend
-                จะแลก Access Token (อายุ 2 ชม.) และแนบ <code className="text-sky-300 font-mono">Authorization: Bearer</code> ให้เอง
-                — ถ้าเชื่อมต่อไม่ได้ ให้ตรวจว่ารัน <code className="text-sky-300 font-mono">npm run worker</code> อยู่หรือไม่
+                แนบ <code className="text-sky-300 font-mono">X-API-Key</code> ให้เอง — ถ้าเชื่อมต่อไม่ได้
+                ให้ตรวจว่ารัน <code className="text-sky-300 font-mono">npm run worker</code> อยู่หรือไม่
               </p>
             </div>
           )}

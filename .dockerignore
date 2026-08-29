@@ -12,7 +12,6 @@ coverage
 Solar3DViewer.pre-optimization.tsx.bak
 *.md
 
-# Backend secrets must arrive via compose env, never baked into an image layer.
+# The API key must arrive via compose env, never baked into an image layer.
 worker/.dev.vars
 worker/.env
-worker/.token-store.json

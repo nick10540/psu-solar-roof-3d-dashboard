@@ -7,11 +7,10 @@ coverage/
 .env*
 !.env.example
 
-# Backend secrets (SolarEdge OAuth client credentials)
+# Backend secret (SolarEdge Fleet API Key)
 worker/.dev.vars
 worker/.env
 !worker/.dev.vars.example
-worker/.token-store.json
 
 # Legacy stray credential filenames — these are NOT matched by the .env* rule.
 solar.env

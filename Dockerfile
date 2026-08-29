@@ -15,8 +15,8 @@ RUN npm run build
 
 # ---------------------------------------------------------------------------
 # Serve stage: nginx serves the built SPA and reverse-proxies /api/solaredge to
-# the backend container (Dockerfile.worker), which holds the SolarEdge OAuth
-# credentials. Building data still lives in localStorage - see
+# the backend container (Dockerfile.worker), which holds the SolarEdge API
+# key. Building data still lives in localStorage - see
 # buildingStorageService.ts. See docker/nginx.conf and docker-compose.yml.
 # ---------------------------------------------------------------------------
 FROM nginx:1.27-alpine AS serve

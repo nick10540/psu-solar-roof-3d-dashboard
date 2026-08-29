@@ -176,35 +176,27 @@ export interface SolarEdgeQuotaInfo {
   upstreamCallsToday?: number | null;
 }
 
-/** Authorization state of one SolarEdge site, as reported by the backend. */
-export interface SolarEdgeSiteAuthStatus {
+/** One SolarEdge site the backend is configured to read. */
+export interface SolarEdgeSiteStatus {
   siteId: number;
   name: string;
-  authorized: boolean;
-  /** Seconds left on this site's cached access token (2 h when fresh). */
-  accessTokenTtlSec: number | null;
 }
 
 /**
  * Backend connection state, replacing the old client-side API key.
  *
- * Credentials moved server-side with the switch to SolarEdge Connect: the
- * browser holds nothing secret, so the only thing left to configure here is
- * live-vs-mock, plus kicking off the consent flow.
- *
- * A SolarEdge grant covers ONE site, so authorization is tracked per site
- * rather than as a single account-wide flag.
+ * The credential moved server-side: the backend holds a Fleet API Key covering
+ * every site, so the browser has nothing secret and nothing to configure here
+ * beyond choosing live-vs-mock.
  */
 export interface SolarEdgeBackendStatus {
   reachable: boolean;
   /** Site IDs the backend is configured to read. */
   siteIds: number[];
-  /** Per-site authorization state. Empty until /health has answered. */
-  sites: SolarEdgeSiteAuthStatus[];
-  authorizedCount: number;
-  totalSites: number;
+  /** Site list from /health. Empty until it has answered. */
+  sites: SolarEdgeSiteStatus[];
   /** Per-site upstream failures from the last fetch. */
-  siteErrors: Array<{ siteId: number; message: string; needsAuthorization?: boolean }>;
+  siteErrors: Array<{ siteId: number; message: string }>;
   /** Set when the backend served its last good data through an outage. */
   staleReason: string | null;
   message: string | null;

@@ -1,9 +1,9 @@
 /**
  * solaredge.ts — the SolarEdge v2 data client.
  *
- * Credentials never appear in a URL: a Fleet API Key rides in `X-API-Key`, an
- * OAuth token in `Authorization`. That is the point of moving off `?api_key=`
- * — query strings end up in proxy logs, browser history and Referer headers.
+ * The key never appears in a URL — it rides in `X-API-Key`. That is the point
+ * of moving off `?api_key=`: query strings end up in proxy logs, browser
+ * history and Referer headers.
  *
  * Response normalisation: the backend assembles the v1-shaped `overview` object
  * the dashboard already knows how to transform, from the v2 series endpoints.
@@ -12,7 +12,7 @@
  */
 
 import { OVERVIEW_CACHE_TTL_MS, ResolvedConfig, SiteDescriptor } from './config.js';
-import { getAccessToken, TokenError } from './tokenStore.js';
+
 
 // ---------------------------------------------------------------------------
 // Wire shapes handed to the dashboard (mirrors src/types.ts)
@@ -53,8 +53,6 @@ export interface SiteFetchError {
   siteId: number;
   message: string;
   status?: number;
-  /** True when the fix is "send the operator through SolarEdge Connect again". */
-  needsAuthorization?: boolean;
 }
 
 export interface OverviewPayload {
@@ -126,12 +124,12 @@ class UpstreamError extends Error {
  */
 function describeApiError(siteId: number, status: number, body: string): string {
   if (status === 401) {
-    return `ไซต์ ${siteId}: token หมดอายุหรือถูกเพิกถอน — ต้องเชื่อมต่อใหม่`;
+    return `ไซต์ ${siteId}: API Key ไม่ถูกต้องหรือถูกเพิกถอน — ตรวจสอบ SOLAREDGE_API_KEY`;
   }
   if (status === 403) {
     return /tier/i.test(body)
       ? `ไซต์ ${siteId}: endpoint นี้ต้องใช้ package ระดับสูงกว่า (403)`
-      : `ไซต์ ${siteId}: สิทธิ์ OAuth ไม่ครอบคลุมไซต์นี้ หรือ scope ไม่พอ — กดเชื่อมต่อไซต์นี้อีกครั้ง`;
+      : `ไซต์ ${siteId}: API Key ไม่ครอบคลุมไซต์นี้ — ต้องอยู่ใน fleet ของบัญชีที่ออก key`;
   }
   if (status === 429) {
     return /credit/i.test(body)
@@ -142,39 +140,21 @@ function describeApiError(siteId: number, status: number, body: string): string 
 }
 
 /**
- * GET a JSON path for one site, authenticated per the configured mode.
+ * GET a JSON path for one site with the Fleet API Key.
  *
- * Retries exactly once on 401, and only in OAuth mode. One retry, not a loop:
- * a 401 that survives a new token is a revoked grant or a scope problem, and
- * hammering it only burns rate limit — which the API charges per minute.
+ * No retry on 401: the key is either accepted or it is not, and a second
+ * attempt would only spend rate limit — which the API charges per minute.
  */
 async function getJson<T>(cfg: ResolvedConfig, siteId: number, path: string): Promise<T> {
   const url = `${cfg.apiBase}${path}`;
 
-  const attempt = async (forceRefresh: boolean): Promise<Response> => {
-    // A Fleet API Key needs no token dance at all — and it is the only path
-    // that works for an account owning several sites.
-    const auth: Record<string, string> =
-      cfg.authMode === 'api_key'
-        ? { 'X-API-Key': cfg.apiKey as string }
-        : await getAccessToken(cfg, siteId, { forceRefresh }).then((t) => ({
-            Authorization: `${t.tokenType} ${t.accessToken}`,
-          }));
-
-    countUpstreamCall();
-    return fetch(url, { headers: { ...auth, Accept: 'application/json' } });
-  };
-
   let res: Response;
   try {
-    res = await attempt(false);
-    // Retrying a 401 only helps when there is a token to re-mint; an API key
-    // that is rejected will be rejected again, and the retry just burns quota.
-    if (res.status === 401 && cfg.authMode === 'oauth') res = await attempt(true);
+    countUpstreamCall();
+    res = await fetch(url, {
+      headers: { 'X-API-Key': cfg.apiKey, Accept: 'application/json' },
+    });
   } catch (err) {
-    // A token failure is specific to this site's grant — let it propagate so
-    // the caller can report it against the right site.
-    if (err instanceof TokenError) throw err;
     throw new UpstreamError(err instanceof Error ? err.message : String(err), 502);
   }
 
@@ -412,12 +392,10 @@ async function loadSiteMeta(cfg: ResolvedConfig, desc: SiteDescriptor): Promise<
     const meta = await getJson<unknown>(cfg, desc.siteId, `/sites/${desc.siteId}`);
     siteMetaCache.set(desc.siteId, { meta, storedAt: Date.now() });
     return meta;
-  } catch (err) {
-    // An auth failure is not "this site has no name" — do not cache it, and let
-    // the caller report the real reason.
-    if (err instanceof TokenError) throw err;
+  } catch {
     // Metadata is a nice-to-have: the registry fallback covers it, and losing a
-    // display name must never cost us the energy reading.
+    // display name must never cost us the energy reading. Caching the failure
+    // stops a 404 endpoint being retried at full price on every poll.
     siteMetaCache.set(desc.siteId, { meta: null, storedAt: Date.now() });
     return null;
   }
@@ -426,9 +404,9 @@ async function loadSiteMeta(cfg: ResolvedConfig, desc: SiteDescriptor): Promise<
 /**
  * Fetch one site.
  *
- * Every failure is reported against this site and never thrown: with per-site
- * API grants, หาดใหญ่ failing must not blank out ตรัง — which is exactly what a
- * thrown error would do inside the Promise.all that calls this.
+ * Every failure is reported against this site and never thrown: หาดใหญ่ hitting
+ * a rate limit must not blank out ตรัง, which is what a thrown error would do
+ * to the loop that calls this.
  *
  * Cost: 2 live requests (power + today's energy) plus 1 more only when the
  * 30-minute cold cache has expired.
@@ -440,9 +418,7 @@ async function fetchOneSite(
   const toError = (err: unknown): SiteFetchError => ({
     siteId: desc.siteId,
     message: err instanceof Error ? err.message : String(err),
-    status:
-      err instanceof TokenError ? err.status : err instanceof UpstreamError ? err.status : 502,
-    needsAuthorization: err instanceof TokenError && err.status === 401,
+    status: err instanceof UpstreamError ? err.status : 502,
   });
 
   let siteMeta: unknown = null;

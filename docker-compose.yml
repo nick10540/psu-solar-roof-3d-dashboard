@@ -18,7 +18,7 @@ services:
       retries: 3
       start_period: 10s
 
-  # SolarEdge OAuth backend. Holds the client id/secret and the refresh token;
+  # SolarEdge backend. Holds the Fleet API Key;
   # deliberately has NO published port — nginx reaches it over the compose
   # network, and nothing outside the stack can.
   solaredge-backend:
@@ -28,19 +28,8 @@ services:
     container_name: psu-solar-solaredge-backend
     restart: unless-stopped
     environment:
-      # Either a Fleet API Key (covers all sites, no consent) or the OAuth pair.
-      SOLAREDGE_API_KEY: ${SOLAREDGE_API_KEY:-}
-      SOLAREDGE_CLIENT_ID: ${SOLAREDGE_CLIENT_ID:-}
-      SOLAREDGE_CLIENT_SECRET: ${SOLAREDGE_CLIENT_SECRET:-}
-      # Per-site seeds are optional; the connect flow writes them to the volume.
-      SOLAREDGE_REFRESH_TOKEN_4956359: ${SOLAREDGE_REFRESH_TOKEN_4956359:-}
-      SOLAREDGE_REFRESH_TOKEN_4821237: ${SOLAREDGE_REFRESH_TOKEN_4821237:-}
-      SOLAREDGE_REFRESH_TOKEN_4947126: ${SOLAREDGE_REFRESH_TOKEN_4947126:-}
+      SOLAREDGE_API_KEY: ${SOLAREDGE_API_KEY:?set SOLAREDGE_API_KEY in .env}
       SOLAREDGE_SITE_IDS: ${SOLAREDGE_SITE_IDS:-4956359,4821237,4947126}
-    volumes:
-      # The refresh token rotates on every use. Persist it, or a rebuild forces
-      # the SolarEdge consent flow to be redone by hand.
-      - solaredge-token:/data
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8787/api/solaredge/health"]
       interval: 30s
@@ -48,5 +37,3 @@ services:
       retries: 3
       start_period: 10s
 
-volumes:
-  solaredge-token:

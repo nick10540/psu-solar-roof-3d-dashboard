@@ -4,15 +4,14 @@
  * Deploy path only; local dev and the kiosk PC use node-server.ts. Both call
  * the same handleRequest, so behaviour cannot drift between them.
  *
- *   wrangler secret put SOLAREDGE_CLIENT_ID
- *   wrangler secret put SOLAREDGE_CLIENT_SECRET
+ *   wrangler secret put SOLAREDGE_API_KEY
  *   wrangler deploy
  *
- * Caveat worth knowing before choosing this target: the token cache and the
- * overview cache live in isolate memory. Cloudflare may run several isolates,
- * so each one warms its own token — correct, just slightly more upstream calls
- * than the single Node process. Move both caches to a Durable Object or KV if
- * that ever matters against the API budget.
+ * Caveat worth knowing before choosing this target: the response caches live
+ * in isolate memory. Cloudflare may run several isolates, so each warms its own
+ * — correct, just slightly more upstream calls than the single Node process.
+ * Move them to a Durable Object or KV if that ever matters against the API
+ * budget, which is charged per minute.
  */
 
 import { handleRequest } from './src/handler.js';
