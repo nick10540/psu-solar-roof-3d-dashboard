@@ -55,9 +55,24 @@ export interface SiteFetchError {
   status?: number;
 }
 
+/** One point of today's power curve, in Watts. Nulls are dropped. */
+export interface PowerSample {
+  t: string;
+  w: number;
+}
+
 export interface OverviewPayload {
   sites: WireSite[];
   overviews: Record<number, WireOverview>;
+  /**
+   * Today's quarter-hourly power curve per site.
+   *
+   * Passed through because the backend already fetches it to derive current
+   * power — the detail page's chart costs nothing extra. Without it that chart
+   * falls back to a simulated curve scaled by capacity, which on a live
+   * dashboard is a fabricated shape sitting under real headline figures.
+   */
+  powerSeries: Record<number, PowerSample[]>;
   errors: SiteFetchError[];
   fetchedAt: number;
   fromCache: boolean;
@@ -414,7 +429,12 @@ async function loadSiteMeta(cfg: ResolvedConfig, desc: SiteDescriptor): Promise<
 async function fetchOneSite(
   cfg: ResolvedConfig,
   desc: SiteDescriptor
-): Promise<{ site: WireSite; overview: WireOverview | null; error?: SiteFetchError }> {
+): Promise<{
+  site: WireSite;
+  overview: WireOverview | null;
+  power: PowerSample[];
+  error?: SiteFetchError;
+}> {
   const toError = (err: unknown): SiteFetchError => ({
     siteId: desc.siteId,
     message: err instanceof Error ? err.message : String(err),
@@ -425,7 +445,7 @@ async function fetchOneSite(
   try {
     siteMeta = await loadSiteMeta(cfg, desc);
   } catch (err) {
-    return { site: normaliseSite(desc, null), overview: null, error: toError(err) };
+    return { site: normaliseSite(desc, null), overview: null, power: [], error: toError(err) };
   }
 
   const site = normaliseSite(desc, siteMeta);
@@ -439,8 +459,17 @@ async function fetchOneSite(
     const energyRaw = await getJson<unknown>(cfg, desc.siteId, `/sites/${desc.siteId}/energy`);
     const cold = await loadColdTotals(cfg, desc.siteId, site.installationDate);
 
-    const latest = latestNonNull(seriesPoints(powerRaw));
+    const powerPoints = seriesPoints(powerRaw);
+    const latest = latestNonNull(powerPoints);
     const dailyWh = sumNonNull(seriesPoints(energyRaw));
+
+    // Only reported samples. A null is "not measured yet", and carrying it
+    // through would draw the curve down to zero at the end of the day.
+    const power: PowerSample[] = powerPoints
+      .filter((p): p is { timestamp: string; value: number } =>
+        typeof p.value === 'number' && Number.isFinite(p.value)
+      )
+      .map((p) => ({ t: p.timestamp, w: p.value }));
 
     // A site that reported nothing at all is "no data", not "zero". Zero is a
     // real measurement — an inverter that is on and producing nothing — and on
@@ -449,6 +478,7 @@ async function fetchOneSite(
       return {
         site,
         overview: null,
+        power: [],
         error: { siteId: desc.siteId, message: 'SolarEdge ยังไม่มีข้อมูลการผลิตของไซต์นี้' },
       };
     }
@@ -463,9 +493,9 @@ async function fetchOneSite(
       measuredBy: 'INVERTER',
     };
 
-    return { site, overview };
+    return { site, overview, power };
   } catch (err) {
-    return { site, overview: null, error: toError(err) };
+    return { site, overview: null, power: [], error: toError(err) };
   }
 }
 
@@ -505,17 +535,20 @@ export async function fetchAllOverviews(
 
     const sites: WireSite[] = [];
     const overviews: Record<number, WireOverview> = {};
+    const powerSeries: Record<number, PowerSample[]> = {};
     const errors: SiteFetchError[] = [];
 
-    results.forEach(({ site, overview, error }) => {
+    results.forEach(({ site, overview, power, error }) => {
       sites.push(site);
       if (overview) overviews[site.id] = overview;
+      if (power.length) powerSeries[site.id] = power;
       if (error) errors.push(error);
     });
 
     const payload: OverviewPayload = {
       sites,
       overviews,
+      powerSeries,
       errors,
       fetchedAt: Date.now(),
       fromCache: false,

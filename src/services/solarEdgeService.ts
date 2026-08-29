@@ -70,6 +70,8 @@ export interface SolarEdgeRequestOptions {
 interface BackendOverviewPayload {
   sites: SolarEdgeRawSite[];
   overviews: Record<string, SolarEdgeOverviewResponse['overview']>;
+  /** Today's quarter-hourly power curve per site, in Watts. */
+  powerSeries?: Record<string, Array<{ t: string; w: number }>>;
   errors?: Array<{ siteId: number; message: string; status?: number }>;
   fetchedAt: number;
   fromCache: boolean;
@@ -677,7 +679,7 @@ export async function fetchSolarEdgeAccountData(
     sites.forEach((site) => {
       const raw = payload.overviews?.[String(site.id)];
       if (!raw) return;
-      overviewsRecord[site.id] = transformSolarEdgeOverview(
+      const transformed = transformSolarEdgeOverview(
         site.id,
         site.name,
         site.peakPower,
@@ -685,6 +687,16 @@ export async function fetchSolarEdgeAccountData(
         raw,
         false
       );
+
+      const curve = payload.powerSeries?.[String(site.id)];
+      if (curve?.length) {
+        transformed.powerCurveToday = curve.map((p) => ({
+          timestamp: p.t,
+          powerKw: Math.round((p.w / 1000) * 10) / 10,
+        }));
+      }
+
+      overviewsRecord[site.id] = transformed;
     });
 
     // Only persist a round that produced at least one reading. Caching a total

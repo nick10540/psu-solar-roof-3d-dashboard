@@ -104,6 +104,14 @@ export interface SolarEdgeTransformedOverview {
   lastUpdateTime: string; // Formatted readable Thai timestamp
   rawTimestamp: string;
   isMockData: boolean;
+  /**
+   * Today's measured power curve (quarter-hourly, kW), when the backend has it.
+   *
+   * Absent in mock mode and for a site with no readings. The detail page draws
+   * this instead of a simulated curve so the chart cannot disagree with the
+   * headline figures printed above it.
+   */
+  powerCurveToday?: Array<{ timestamp: string; powerKw: number }>;
 }
 
 // Building/Site to SolarEdge Site Mapping Definition
