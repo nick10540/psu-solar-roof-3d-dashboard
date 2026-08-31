@@ -22,7 +22,7 @@ const SITE_MEDIA_FILES: Record<string, string> = {
   'MEA-TRG-03': 'vid-trang.mp4', // วิทยาเขตตรัง
   'MEA-HDY-04': 'vid-hatyai.mp4', // วิทยาเขตหาดใหญ่
   'MEA-PTN-05': 'vid-pattani.mp4', // วิทยาเขตปัตตานี
-  // 'MEA-PKT-02': 'vid-phuket.mp4', // วิทยาเขตภูเก็ต - ยังไม่มีไฟล์ ใส่ไฟล์แล้วเปิดบรรทัดนี้
+  'MEA-PKT-02': 'vid-puket.mp4', // วิทยาเขตภูเก็ต
 };
 
 export interface SiteMedia {
