@@ -93,6 +93,7 @@ import { Solar3DViewer } from './components/Solar3DViewer';
 import { SiteDetailSubpage } from './components/SiteDetailSubpage';
 import { HeaderBar } from './components/HeaderBar';
 import { CeremonyHero } from './components/CeremonyHero';
+import { CeremonyClock } from './components/CeremonyClock';
 import { BuildingDetailModal } from './components/BuildingDetailModal';
 import { SolarEdgeSettingsModal } from './components/SolarEdgeSettingsModal';
 import { BuildingBindingModal } from './components/BuildingBindingModal';
@@ -733,6 +734,9 @@ export default function App() {
 
         {/* Ceremony masthead — main map only; the site sub-page has its own header. */}
         {navigationMode === 'main-map' && <CeremonyHero />}
+
+        {/* Digital clock, top-left of the map — same view as the masthead. */}
+        {navigationMode === 'main-map' && <CeremonyClock />}
       </div>
 
       {/* 5. Modals */}

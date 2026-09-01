@@ -87,7 +87,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <img
           src="/logos/left-logo.png"
           alt="โลโก้หน่วยงาน"
-          className="h-9 w-9 object-contain shrink-0"
+          className="h-12 w-12 object-contain shrink-0"
         />
 
         <div className="flex items-center bg-slate-950/70 px-3 py-1.5 rounded-xl border border-sky-500/20 shrink min-w-0">
@@ -99,7 +99,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <img
           src="/logos/right-logo.png"
           alt="ตราสัญลักษณ์มหาวิทยาลัยสงขลานครินทร์"
-          className="h-9 w-auto object-contain shrink-0"
+          className="h-12 w-auto object-contain shrink-0"
         />
       </div>
 

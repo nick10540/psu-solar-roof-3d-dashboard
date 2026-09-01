@@ -20,6 +20,7 @@ import { totalInstalledKwp } from '../data/mockSolarData';
 import { resolveSiteMedia } from '../config/siteMedia';
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
+import { CountUp } from './CountUp';
 import { CO2_KG_PER_KWH_SE, treesFromCo2Kg } from '../utils/energyEquivalents';
 import { 
   ArrowLeft, 
@@ -113,34 +114,69 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   /** Dims a figure with nothing behind it, matching the map's no-data pins. */
   const valueTone = hasNoData ? 'text-slate-600' : 'text-white';
 
+  /*
+   * The figures below are nodes rather than strings, so the digits inside them
+   * can ease to the next reading the way the headline tiles and the map cards
+   * do. Units and the leading ~ stay put; only the number travels.
+   */
+
   // kWh dashboard-wide: no MWh switch, so this figure never changes scale.
   const lifetimeFormatted =
-    lifetimeEnergyKwh === null
-      ? NO_DATA
-      : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
+    lifetimeEnergyKwh === null ? (
+      NO_DATA
+    ) : (
+      <>
+        <CountUp target={lifetimeEnergyKwh} decimals={0} />
+        <span className="text-xs font-normal text-emerald-300/80 ml-1">kWh</span>
+      </>
+    );
 
   // Derived figures follow their input: blank in, blank out. Each is computed
   // from the number displayed directly above it on this page.
   const revenueTodayText =
-    todayEnergyKwh === null
-      ? NO_DATA
-      : `~฿${(todayEnergyKwh * 4.2).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+    todayEnergyKwh === null ? (
+      NO_DATA
+    ) : (
+      <>
+        ~฿<CountUp target={todayEnergyKwh * 4.2} decimals={0} />
+      </>
+    );
   // Lifetime CO2 is SolarEdge's own reading, not a local factor. This page used
   // lifetimeEnergyKwh * 0.0005 (0.5 kg/kWh) while the map used 0.56 and the
   // portal uses 0.392 — three different answers for the same site.
   const lifetimeCo2Text =
-    metrics.co2Kg === null ? NO_DATA : `${(metrics.co2Kg / 1000).toFixed(2)} tonCO₂`;
+    metrics.co2Kg === null ? (
+      NO_DATA
+    ) : (
+      <>
+        <CountUp target={metrics.co2Kg / 1000} decimals={2} /> tonCO₂
+      </>
+    );
   // Today's figures stay derived: SolarEdge reports CO2 cumulatively only.
   const co2TodayText =
-    todayEnergyKwh === null
-      ? NO_DATA
-      : `~${((todayEnergyKwh * CO2_KG_PER_KWH_SE) / 1000).toFixed(2)} tonCO₂/วัน`;
+    todayEnergyKwh === null ? (
+      NO_DATA
+    ) : (
+      <>
+        ~<CountUp target={(todayEnergyKwh * CO2_KG_PER_KWH_SE) / 1000} decimals={2} /> tonCO₂/วัน
+      </>
+    );
   const treesTodayText =
-    todayEnergyKwh === null
-      ? NO_DATA
-      : `~${treesFromCo2Kg(todayEnergyKwh * CO2_KG_PER_KWH_SE)} ต้น`;
+    todayEnergyKwh === null ? (
+      NO_DATA
+    ) : (
+      <>
+        ~<CountUp target={treesFromCo2Kg(todayEnergyKwh * CO2_KG_PER_KWH_SE)} decimals={0} /> ต้น
+      </>
+    );
   const fuelTodayText =
-    todayEnergyKwh === null ? NO_DATA : `~${Math.round(todayEnergyKwh * 0.23)} ลิตร`;
+    todayEnergyKwh === null ? (
+      NO_DATA
+    ) : (
+      <>
+        ~<CountUp target={todayEnergyKwh * 0.23} decimals={0} /> ลิตร
+      </>
+    );
 
   // Scaled time series dataset for this specific site's capacity.
   //
@@ -336,7 +372,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <Zap className="w-4 h-4 text-amber-400 animate-pulse" />
           </div>
           <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
-            <span className={valueTone}>{fmt(currentPowerKw, 1)}</span>
+            <span className={valueTone}><CountUp target={currentPowerKw} decimals={1} placeholder={NO_DATA} /></span>
             {currentPowerKw !== null && (
               <span className="text-xs font-normal text-amber-300/80">kW</span>
             )}
@@ -352,7 +388,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <Sun className="w-4 h-4 text-sky-400" />
           </div>
           <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
-            <span className={valueTone}>{fmt(todayEnergyKwh)}</span>
+            <span className={valueTone}><CountUp target={todayEnergyKwh} placeholder={NO_DATA} /></span>
             {todayEnergyKwh !== null && (
               <span className="text-xs font-normal text-sky-300/80">kWh</span>
             )}
@@ -386,7 +422,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <ShieldCheck className="w-4 h-4 text-blue-400" />
           </div>
           <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
-            <span className={valueTone}>{fmt(capacityKwp, 0)}</span>
+            <span className={valueTone}><CountUp target={capacityKwp} decimals={0} placeholder={NO_DATA} /></span>
             {capacityKwp !== null && (
               <span className="text-xs font-normal text-blue-300/80">kWp</span>
             )}

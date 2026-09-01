@@ -32,6 +32,7 @@ import { BuildingInfo } from '../types';
 import { RegionalTotalsPanel } from './RegionalTotalsPanel';
 import { ResolvedSiteMetrics, RegionalTotals, emptySiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA } from './metricDisplay';
+import { animateNumberText } from '../utils/animateNumber';
 import {
   buildUnifiedMapStyle,
   LAYER_VISIBILITY,
@@ -341,22 +342,34 @@ function patchMarker(
   const pinId = String(site.id);
   if (handle.pinIdEl.textContent !== pinId) handle.pinIdEl.textContent = pinId;
 
-  const nextPower =
-    metrics.currentPowerKw === null ? NO_DATA : metrics.currentPowerKw.toFixed(1);
-  if (handle.powerEl.textContent !== nextPower) handle.powerEl.textContent = nextPower;
+  // Figures glide to their new reading instead of snapping. These nodes are
+  // plain DOM (the card is built once with innerHTML), so the same easing the
+  // React cards get arrives through animateNumberText rather than <CountUp>.
+  // Units are set outright: 'kWh' has nothing to travel between.
+  animateNumberText(handle.powerEl, metrics.currentPowerKw, {
+    decimals: 1,
+    placeholder: NO_DATA,
+  });
 
-  if (handle.energyValEl.textContent !== lifetime.value) handle.energyValEl.textContent = lifetime.value;
+  animateNumberText(handle.energyValEl, metrics.lifetimeEnergyKwh, {
+    decimals: 0,
+    placeholder: NO_DATA,
+  });
   if (handle.energyUnitEl.textContent !== lifetime.unit) handle.energyUnitEl.textContent = lifetime.unit;
 
-  const nextCapacity =
-    metrics.capacityKwp === null
-      ? NO_DATA
-      : Math.round(metrics.capacityKwp).toLocaleString();
-  if (handle.capacityEl.textContent !== nextCapacity) handle.capacityEl.textContent = nextCapacity;
+  animateNumberText(handle.capacityEl, metrics.capacityKwp, {
+    decimals: 0,
+    placeholder: NO_DATA,
+  });
 
   const co2 =
     metrics.co2Kg === null ? { value: NO_DATA, unit: '' } : formatCo2(metrics.co2Kg);
-  if (handle.co2ValEl.textContent !== co2.value) handle.co2ValEl.textContent = co2.value;
+  // Card prints tonCO2 while the metric carries kg - convert before easing, or
+  // the tween runs across a thousand-fold gap on the way to the same figure.
+  animateNumberText(handle.co2ValEl, metrics.co2Kg === null ? null : metrics.co2Kg / 1000, {
+    decimals: 2,
+    placeholder: NO_DATA,
+  });
   if (handle.co2UnitEl.textContent !== co2.unit) handle.co2UnitEl.textContent = co2.unit;
 
 
@@ -1128,8 +1141,15 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
         Moved up from the bottom-right corner on request. The control drawer
         also lives on this edge but centres itself vertically, so a panel
         anchored to the top does not sit under it.
+
+        Vertical position is set by the ceremony masthead, not by taste. The
+        masthead is centred and runs ~1280px wide (two large partner logos
+        plus a 50-character Thai title on one line), so its right end reaches
+        this corner on anything narrower than ~1990px and the PSU crest lands
+        on this panel. Below that width the panel sits under the masthead
+        instead; above it, back in the corner.
       */}
-      <div className="absolute top-3 right-3 z-20 pointer-events-auto">
+      <div className="absolute right-3 top-[10.5rem] min-[1990px]:top-3 z-20 pointer-events-auto">
         <RegionalTotalsPanel totals={totals} />
       </div>
 

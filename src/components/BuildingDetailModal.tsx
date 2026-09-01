@@ -11,6 +11,7 @@ import React from 'react';
 import { BuildingInfo, SolarEdgeTransformedOverview, InverterInfo } from '../types';
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
+import { CountUp } from './CountUp';
 import {
   X,
   Zap,
@@ -87,7 +88,7 @@ const SimulatedInverterCard: React.FC<{ inverter: InverterInfo }> = ({ inverter 
             {str.voltageV} V • {str.currentA} A
           </span>
           <span className="text-amber-300 text-[10px] block">
-            {(str.powerW / 1000).toFixed(2)} kW
+            <CountUp target={str.powerW / 1000} decimals={2} /> kW
           </span>
         </div>
       ))}
@@ -128,11 +129,21 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
   // Monthly production is not part of ResolvedSiteMetrics - only the API
   // reports it. The mock estimate is kept but no longer masquerades as a
   // reading; it is captioned as simulated like everything else in mock mode.
-  const monthlyText = live
-    ? `${Math.round(live.monthlyEnergyKwh).toLocaleString()} kWh`
+  const monthlyKwh = live
+    ? live.monthlyEnergyKwh
     : isSimulated
-      ? `${Math.round(building.capacityKwp * 115).toLocaleString()} kWh`
-      : NO_DATA;
+      ? building.capacityKwp * 115
+      : null;
+  // A node, not a string: the digits ease to the new reading, the unit does not.
+  const monthlyText =
+    monthlyKwh === null ? (
+      NO_DATA
+    ) : (
+      <>
+        <CountUp target={monthlyKwh} decimals={0} />
+        <span className="text-xs text-slate-400 font-sans"> kWh</span>
+      </>
+    );
 
   return (
     <div
@@ -282,7 +293,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
               กำลังผลิตขณะนี้
             </span>
             <div className={`text-xl font-bold font-mono mt-1 ${tone('text-emerald-300')}`}>
-              {fmt(metrics.currentPowerKw, 1)}
+              <CountUp target={metrics.currentPowerKw} decimals={1} placeholder={NO_DATA} />
               {metrics.currentPowerKw !== null && (
                 <span className="text-xs text-slate-400 font-sans"> kW</span>
               )}
@@ -299,7 +310,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
               พลังงานผลิตวันนี้
             </span>
             <div className={`text-xl font-bold font-mono mt-1 ${tone('text-sky-300')}`}>
-              {fmt(metrics.todayEnergyKwh)}
+              <CountUp target={metrics.todayEnergyKwh} placeholder={NO_DATA} />
               {metrics.todayEnergyKwh !== null && (
                 <span className="text-xs text-slate-400 font-sans"> kWh</span>
               )}
@@ -333,7 +344,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
               กำลังติดตั้งรวม
             </span>
             <div className={`text-xl font-bold font-mono mt-1 ${tone('text-amber-300')}`}>
-              {fmt(metrics.capacityKwp, 0)}
+              <CountUp target={metrics.capacityKwp} decimals={0} placeholder={NO_DATA} />
               {metrics.capacityKwp !== null && (
                 <span className="text-xs text-slate-400 font-sans"> kWp</span>
               )}

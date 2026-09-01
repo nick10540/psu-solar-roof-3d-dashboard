@@ -3,16 +3,20 @@
  * Animated number that eases from its previous value to a new one.
  *
  * Used for every figure on the dashboard that changes on a poll — power,
- * energy, CO2, trees, capacity — but deliberately NOT for the clock: a running
- * clock is already a continuous readout, and easing it would make it briefly
- * show times that were never true.
+ * energy, CO2, trees, capacity, revenue — but deliberately NOT for the clock:
+ * a running clock is already a continuous readout, and easing it would make it
+ * briefly show times that were never true.
+ *
+ * The behaviour (ease direction, first-paint snap, reduced motion, default
+ * precision) lives in utils/animateNumber so the map's marker cards — plain
+ * DOM that React never renders — animate identically. Edit it there.
  *
  * Two things worth knowing before editing:
  *
- *  1. It animates FROM THE LAST DISPLAYED VALUE, not from zero. The dashboard
- *     refreshes every five minutes, and replaying 0 → 611,317 on each tick
- *     would read as the plant restarting rather than as a small update. On the
- *     very first render it snaps straight to the target for the same reason.
+ *  1. It animates FROM THE LAST DISPLAYED VALUE, not from zero, and it runs
+ *     downwards just as happily as up. The dashboard refreshes every five
+ *     minutes, and replaying 0 → 611,317 on each tick would read as the plant
+ *     restarting rather than as a small update.
  *
  *  2. `requestAnimationFrame`, not `setInterval`. The frame callback is tied to
  *     the display refresh, so the animation stays smooth, and the browser stops
@@ -21,14 +25,21 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
+import {
+  easeOutCubic,
+  formatNumber,
+  fractionDigitsOf,
+  prefersReducedMotion,
+} from '../utils/animateNumber';
 
 interface CountUpProps {
-  /** The value to land on. */
-  target: number;
+  /** The value to land on. `null` renders the placeholder. */
+  target: number | null;
   /** How long the run takes, in milliseconds. */
   duration?: number;
   /**
-   * Decimal places to show.
+   * Decimal places to show. Omitted, it follows the target's own precision, so
+   * 3,213.5 keeps its tenth and 8,612 does not grow a ".0".
    *
    * Needed as well as thousands separators: this dashboard prints 0.61 tonCO₂
    * next to 611,317 kWh, so a single fixed format cannot serve both.
@@ -39,47 +50,37 @@ interface CountUpProps {
   className?: string;
 }
 
-/**
- * Ease-out cubic: fast off the mark, then settling.
- *
- * Cubic rather than quadratic because the last 10% of the run is where the eye
- * checks the number against what it expects, and the gentler tail reads as
- * "arriving" instead of "stopping".
- */
-function easeOutCubic(t: number): number {
-  return 1 - Math.pow(1 - t, 3);
-}
-
-function format(value: number, decimals: number): string {
-  return value.toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
-}
-
 export const CountUp: React.FC<CountUpProps> = ({
   target,
   duration = 900,
-  decimals = 0,
+  decimals,
   placeholder = '—',
   className,
 }) => {
   const isValid = typeof target === 'number' && Number.isFinite(target);
-  const safeTarget = isValid ? target : 0;
+  const safeTarget = isValid ? (target as number) : 0;
+  const places = decimals ?? fractionDigitsOf(safeTarget);
 
   const [displayed, setDisplayed] = useState<number>(safeTarget);
 
   /** What is on screen right now — the start point for the next run. */
   const displayedRef = useRef<number>(safeTarget);
-  /** Skips the animation on mount so the first paint is the real figure. */
-  const mountedRef = useRef<boolean>(false);
+  /**
+   * Skips the animation on the first real value. Also re-armed whenever the
+   * figure goes to no-data, so a site coming back online snaps to its reading
+   * instead of gliding up from a value it no longer had.
+   */
+  const hasValueRef = useRef<boolean>(false);
   const frameRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!isValid) return;
+    if (!isValid) {
+      hasValueRef.current = false;
+      return;
+    }
 
-    if (!mountedRef.current) {
-      mountedRef.current = true;
+    if (!hasValueRef.current) {
+      hasValueRef.current = true;
       displayedRef.current = safeTarget;
       setDisplayed(safeTarget);
       return;
@@ -88,15 +89,7 @@ export const CountUp: React.FC<CountUpProps> = ({
     const from = displayedRef.current;
     if (from === safeTarget) return;
 
-    // Someone who has asked their OS to reduce motion gets the number, not the
-    // journey. Checked here rather than at module scope so the setting can be
-    // changed without a reload.
-    const reduceMotion =
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    if (reduceMotion || duration <= 0) {
+    if (prefersReducedMotion() || duration <= 0) {
       displayedRef.current = safeTarget;
       setDisplayed(safeTarget);
       return;
@@ -139,7 +132,5 @@ export const CountUp: React.FC<CountUpProps> = ({
     return <span className={className}>{placeholder}</span>;
   }
 
-  return (
-    <span className={className}>{format(displayed, decimals)}</span>
-  );
+  return <span className={className}>{formatNumber(displayed, places)}</span>;
 };
