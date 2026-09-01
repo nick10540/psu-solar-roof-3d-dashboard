@@ -39,6 +39,7 @@ import {
   SolarEdgeTransformedOverview,
   SolarEdgeQuotaInfo,
   BuildingSiteBinding,
+  bindingSiteIds,
   SolarEdgeBackendStatus,
   AppNavigationMode
 } from './types';
@@ -81,6 +82,12 @@ import {
   emptySiteMetrics,
   ResolvedSiteMetrics,
 } from './services/siteMetricsService';
+import {
+  co2TonsFromKg,
+  co2TonsFromKwh,
+  treesFromCo2Kg,
+  treesFromKwh,
+} from './utils/energyEquivalents';
 
 import { Solar3DViewer } from './components/Solar3DViewer';
 import { SiteDetailSubpage } from './components/SiteDetailSubpage';
@@ -169,6 +176,23 @@ export default function App() {
   const inFlightRef = useRef<boolean>(false);
   const mountedRef = useRef<boolean>(true);
   const lastSyncAtRef = useRef<number>(0);
+  /**
+   * Latest bindings, mirrored into a ref.
+   *
+   * The poll callback needs the bound site IDs but must NOT list `bindings`
+   * as a dependency: re-creating it on every save would tear down and
+   * restart the 5-minute interval, and a burst of edits would each trigger
+   * their own upstream round.
+   */
+  const bindingsRef = useRef(bindings);
+  /** Latest config, mirrored for the same reason as bindingsRef. */
+  const configRef = useRef(config);
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+  useEffect(() => {
+    bindingsRef.current = bindings;
+  }, [bindings]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -209,9 +233,22 @@ export default function App() {
       if (!silent) setIsSolarEdgeLoading(true);
 
       try {
-        // No credential argument: the SolarEdge API key lives in worker/
-        // and never reach the browser. This call goes to /api/solaredge.
+        // No credential argument: the SolarEdge API key lives in worker/ and
+        // never reaches the browser. This call goes to /api/solaredge.
+        //
+        // Every site ID the dashboard needs: what the pins are bound to, plus
+        // anything registered by hand in the settings modal. The manual entries
+        // matter most on first use — an ID nothing is bound to yet has to be
+        // fetched once before it can appear in the list to bind to.
+        const boundIds = Array.from(
+          new Set([
+            ...Object.values(bindingsRef.current).flatMap((b) => bindingSiteIds(b)),
+            ...(configRef.current.extraSiteIds ?? []),
+          ])
+        );
+
         const res = await fetchSolarEdgeAccountData({
+          siteIds: boundIds,
           forceRefresh,
           useMock: config.useMock,
           signal: controller.signal,
@@ -229,6 +266,10 @@ export default function App() {
           let totalMonthlyKwh = 0;
           let totalYearlyKwh = 0;
           let totalLifetimeKwh = 0;
+          // SolarEdge's own CO2, summed. Null-safe: a site whose
+          // environmental-benefits call failed simply does not contribute.
+          let totalCo2Kg = 0;
+          let anyCo2 = false;
 
           overviewValues.forEach((ov) => {
             totalPowerKw += ov.currentPowerKw;
@@ -236,6 +277,10 @@ export default function App() {
             totalMonthlyKwh += ov.monthlyEnergyKwh;
             totalYearlyKwh += ov.yearlyEnergyKwh;
             totalLifetimeKwh += ov.lifetimeEnergyKwh;
+            if (typeof ov.co2Kg === 'number' && Number.isFinite(ov.co2Kg)) {
+              totalCo2Kg += ov.co2Kg;
+              anyCo2 = true;
+            }
           });
 
           if (totalPowerKw > 0) {
@@ -250,8 +295,17 @@ export default function App() {
               monthEnergyKwh: Math.round(totalMonthlyKwh * 10) / 10,
               yearEnergyKwh: Math.round(totalYearlyKwh * 10) / 10,
               lifetimeEnergyKwh: totalLifetimeKwh,
-              // 0.56 kg CO2 per kWh, reported in tonnes over the system lifetime.
-              co2ReducedTons: Math.round(((totalLifetimeKwh * 0.56) / 1000) * 10) / 10,
+              // CO2 and trees now trace back to SolarEdge instead of to local
+              // factors. Measured across all four sites, the portal uses exactly
+              // 0.392 kg/kWh, so the old 0.56 read ~43% high; trees at
+              // 0.08/kWh read ~7.3x high. The local derivation is kept only for
+              // when no site reported an environmental figure at all.
+              co2ReducedTons: anyCo2
+                ? Math.round(co2TonsFromKg(totalCo2Kg) * 10) / 10
+                : Math.round(co2TonsFromKwh(totalLifetimeKwh) * 10) / 10,
+              treesPlanted: anyCo2
+                ? treesFromCo2Kg(totalCo2Kg)
+                : treesFromKwh(totalLifetimeKwh),
             };
           }
         }
@@ -467,6 +521,7 @@ export default function App() {
       saveBuildingSiteBinding({
         buildingId,
         siteId: null,
+        siteIds: [],
         primaryMetric: 'currentPower',
         isBound: false,
       })
@@ -505,6 +560,7 @@ export default function App() {
         handleSaveBinding({
           buildingId: newBuilding.id,
           siteId: bindSiteId,
+          siteIds: [bindSiteId],
           siteName: site?.name || `Site #${bindSiteId}`,
           primaryMetric: 'currentPower',
           isBound: true,
@@ -553,6 +609,11 @@ export default function App() {
       // from; the API key it used to share this check with moved to worker/.
       const sourceChanged = config.useMock !== newCfg.useMock;
       setConfig(newCfg);
+      // Mirror into the ref in the SAME tick. The refresh below reads
+      // configRef, and the effect that normally syncs it has not run yet — so
+      // without this a site ID added just now would be missing from the very
+      // request meant to go and fetch it.
+      configRef.current = newCfg;
       saveSolarEdgeConfig(newCfg);
 
       if (sourceChanged) {

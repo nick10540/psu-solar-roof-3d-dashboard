@@ -6,10 +6,21 @@
 SOLAREDGE_API_KEY=
 
 # Site IDs the backend is allowed to read.
-#   4956359 = หาดใหญ่ | 4821237 = ตรัง | 4947126 = ปัตตานี
-SOLAREDGE_SITE_IDS=4956359,4821237,4947126
+#   4956359 = หาดใหญ่ | 4821237 = ตรัง | 4947126 = ปัตตานี | 4817295 = สุราษฎร์ธานี
+SOLAREDGE_SITE_IDS=4956359,4821237,4947126,4817295
 
 SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
+
+# Plan ceilings. The API allows 10 requests per MINUTE and 2000 per MONTH.
+# The backend waits rather than bursting past the per-minute figure, and
+# stops fetching (serving cache) once the monthly budget is spent.
+#
+# NOTE: 2000/month is ~64/day. Four sites cost 2 requests each per refresh,
+# so a 5-minute poll spends roughly 2300/day — about 35x the budget. Raise
+# the poll interval or lower the site count before running this on a kiosk
+# full-time.
+SOLAREDGE_MAX_CALLS_PER_MIN=10
+SOLAREDGE_MONTHLY_CALL_BUDGET=2000
 
 # CORS allow-list. Leave empty for same-origin (behind the Vite/Nginx proxy).
 ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000

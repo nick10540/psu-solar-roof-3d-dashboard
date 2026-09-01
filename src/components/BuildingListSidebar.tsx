@@ -163,9 +163,8 @@ export const BuildingListSidebar: React.FC<BuildingListSidebarProps> = ({
 
             const currentPowerKw = overview ? overview.currentPowerKw : site.currentPowerKw;
             const lifetimeEnergyKwh = overview ? overview.lifetimeEnergyKwh : site.lifetimeEnergyKwh;
-            const lifetimeFormatted = lifetimeEnergyKwh >= 10000 
-              ? `${(lifetimeEnergyKwh / 1000).toFixed(1)} MWh` 
-              : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
+            // kWh dashboard-wide: no MWh switch, so this cell never changes scale.
+            const lifetimeFormatted = `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
 
             return (
               <div

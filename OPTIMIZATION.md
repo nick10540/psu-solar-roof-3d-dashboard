@@ -543,7 +543,7 @@ export function resolveSiteMetrics(building, binding, overviews, mode) {
 หมุดใหม่ได้ id ถัดไปอัตโนมัติ และ marker reconciliation เดิมรองรับอยู่แล้ว
 (สร้าง DOM เฉพาะ id ใหม่ ลบเฉพาะ id ที่หายไป — ไม่รื้อทั้งชุด)
 
-> **ข้อควรรู้** binding เริ่มต้นในเดโมชี้ไปที่ site id ของ mock (2849101–2849105)
+> **ข้อควรรู้** binding เริ่มต้นในเดโมชี้ไปที่ site id ของ mock (เหลือ 2849102 ภูเก็ต ที่ยังเป็น placeholder)
 > พอสลับเป็น Live บัญชีจริงจะมี site id คนละชุด หมุดจึงขึ้น "ไม่มีข้อมูลจาก API"
 > จนกว่าจะเข้าไปผูกใหม่ผ่านปุ่มผูก SolarEdge ของแต่ละหมุด ซึ่งเป็น flow ที่ตั้งใจไว้
 

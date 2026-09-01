@@ -20,6 +20,7 @@ import { totalInstalledKwp } from '../data/mockSolarData';
 import { resolveSiteMedia } from '../config/siteMedia';
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
+import { CO2_KG_PER_KWH_SE, treesFromCo2Kg } from '../utils/energyEquivalents';
 import { 
   ArrowLeft, 
   Zap, 
@@ -112,12 +113,11 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   /** Dims a figure with nothing behind it, matching the map's no-data pins. */
   const valueTone = hasNoData ? 'text-slate-600' : 'text-white';
 
+  // kWh dashboard-wide: no MWh switch, so this figure never changes scale.
   const lifetimeFormatted =
     lifetimeEnergyKwh === null
       ? NO_DATA
-      : lifetimeEnergyKwh >= 10000
-        ? `${(lifetimeEnergyKwh / 1000).toFixed(1)} MWh`
-        : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
+      : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
 
   // Derived figures follow their input: blank in, blank out. Each is computed
   // from the number displayed directly above it on this page.
@@ -125,12 +125,20 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
     todayEnergyKwh === null
       ? NO_DATA
       : `~฿${(todayEnergyKwh * 4.2).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  // Lifetime CO2 is SolarEdge's own reading, not a local factor. This page used
+  // lifetimeEnergyKwh * 0.0005 (0.5 kg/kWh) while the map used 0.56 and the
+  // portal uses 0.392 — three different answers for the same site.
   const lifetimeCo2Text =
-    lifetimeEnergyKwh === null ? NO_DATA : `~${(lifetimeEnergyKwh * 0.0005).toFixed(1)} ตัน`;
+    metrics.co2Kg === null ? NO_DATA : `${(metrics.co2Kg / 1000).toFixed(2)} tonCO₂`;
+  // Today's figures stay derived: SolarEdge reports CO2 cumulatively only.
   const co2TodayText =
-    todayEnergyKwh === null ? NO_DATA : `~${((todayEnergyKwh * 0.56) / 1000).toFixed(2)} ตัน/วัน`;
+    todayEnergyKwh === null
+      ? NO_DATA
+      : `~${((todayEnergyKwh * CO2_KG_PER_KWH_SE) / 1000).toFixed(2)} tonCO₂/วัน`;
   const treesTodayText =
-    todayEnergyKwh === null ? NO_DATA : `~${Math.round(todayEnergyKwh * 0.08)} ต้น`;
+    todayEnergyKwh === null
+      ? NO_DATA
+      : `~${treesFromCo2Kg(todayEnergyKwh * CO2_KG_PER_KWH_SE)} ต้น`;
   const fuelTodayText =
     todayEnergyKwh === null ? NO_DATA : `~${Math.round(todayEnergyKwh * 0.23)} ลิตร`;
 

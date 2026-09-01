@@ -59,4 +59,55 @@ export const MARKER_CARD = {
    * readable without burying the neighbouring card's numbers.
    */
   mediaHeightPx: 120,
+  /**
+   * The one campus whose card is drawn larger than the rest.
+   *
+   * หาดใหญ่ is the main campus, so its pin carries more visual weight than
+   * the four regional ones. Everything else is pinned to exactly widthPx so
+   * the remaining cards read as one set rather than four slightly
+   * different sizes decided by whichever number happened to be longest.
+   */
+  featuredSiteCode: 'MEA-HDY-04',
+  /** Multiplier applied to the featured card's width, banner and text. */
+  featuredScale: 1.3,
 } as const;
+
+/**
+ * Size multiplier for one site's marker.
+ *
+ * Applied to the card width, the banner height and every font size, so the
+ * featured card scales as a whole instead of growing a wider box around
+ * unchanged text.
+ */
+export function markerScaleFor(siteCode: string): number {
+  return siteCode === MARKER_CARD.featuredSiteCode ? MARKER_CARD.featuredScale : 1;
+}
+
+/**
+ * Per-site nudges applied to the card, in px.
+ *
+ * The five pins sit close together at the default camera, and every card grows
+ * upward from its own pin, so at 320-416px wide some of them necessarily
+ * collide. Measured at the default framing on a 1904px viewport:
+ *
+ *   หาดใหญ่ × ปัตตานี   85px wide, full height  -> ปัตตานี moves right
+ *   สุราษฎร์ × ตรัง      141 x 42px              -> สุราษฎร์ moves up
+ *   สุราษฎร์ × ภูเก็ต     44 x 26px               -> same nudge clears both
+ *
+ * หาดใหญ่ is deliberately NOT moved: it is the featured card and sits only 3px
+ * clear of ตรัง on its left, so shifting it left would trade one collision for
+ * a worse one.
+ *
+ * These are tuned to the DEFAULT camera. Pan or zoom far from it and cards can
+ * meet again — the alternative was shrinking the cards until nothing collided,
+ * which costs the legibility the 72" panel was sized for.
+ */
+export const MARKER_CARD_OFFSETS: Record<string, { dx: number; dy: number }> = {
+  'MEA-SRT-01': { dx: 0, dy: -52 }, // สุราษฎร์ธานี — lift clear of ตรัง and ภูเก็ต
+  'MEA-PTN-05': { dx: 96, dy: 0 }, // ปัตตานี — step right of หาดใหญ่
+};
+
+/** The nudge for one site, or zero when it needs none. */
+export function markerCardOffsetFor(siteCode: string): { dx: number; dy: number } {
+  return MARKER_CARD_OFFSETS[siteCode] ?? { dx: 0, dy: 0 };
+}

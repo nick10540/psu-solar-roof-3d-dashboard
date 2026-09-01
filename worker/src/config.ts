@@ -30,6 +30,18 @@ export interface WorkerEnv {
   /** Comma-separated allow-list of site IDs this backend may read. */
   SOLAREDGE_SITE_IDS?: string;
 
+  /**
+   * Upstream requests allowed per rolling minute. Default 10, the plan's
+   * real ceiling. Lower it to leave room for another consumer of the key.
+   */
+  SOLAREDGE_MAX_CALLS_PER_MIN?: string;
+
+  /**
+   * Upstream requests allowed per calendar month. Default 2000, the plan's
+   * real ceiling. Once spent, the backend serves cache instead of fetching.
+   */
+  SOLAREDGE_MONTHLY_CALL_BUDGET?: string;
+
   /** Comma-separated CORS origins. Empty/absent => same-origin only. */
   ALLOWED_ORIGINS?: string;
 
@@ -38,6 +50,23 @@ export interface WorkerEnv {
 }
 
 export const DEFAULT_API_BASE = 'https://monitoringapi.solaredge.com/v2';
+
+/**
+ * Plan limits, and why they are enforced here rather than hoped for.
+ *
+ * The API charges 10 requests per MINUTE and 2000 per MONTH. A cold start
+ * costs 4 requests per site (metadata + power + energy + cold totals), so
+ * four sites need 16 — the per-minute ceiling is crossed by the fourth site
+ * alone, and the last sites in the list come back as 429s. Sequential
+ * fetching alone does not fix that; the burst has to actually wait.
+ *
+ * The monthly figure is the tighter constraint by far: 2000 a month is ~64
+ * a day, while a 5-minute poll over four sites spends ~2300. The budget
+ * guard below does not paper over that — it stops the overrun being silent.
+ */
+export const DEFAULT_MAX_CALLS_PER_MIN = 10;
+export const DEFAULT_MONTHLY_CALL_BUDGET = 2000;
+export const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 /**
  * Serve a cached upstream response for this long.
@@ -59,20 +88,21 @@ export interface SiteDescriptor {
 }
 
 /**
- * The three live sites.
+ * The four live sites.
  *
- * สุราษฎร์ธานี and ภูเก็ต are intentionally absent: no site ID has been issued
- * for them yet. They stay unbound on the dashboard and render as "ไม่มีข้อมูล"
- * rather than borrowing a neighbour's numbers. Add them here when their IDs
- * exist and they light up with no other change.
+ * ภูเก็ต is intentionally absent: no site ID has been issued for it yet. It
+ * stays unbound on the dashboard and renders as "ไม่มีข้อมูล" rather than
+ * borrowing a neighbour's numbers. Add it here when its ID exists and it
+ * lights up with no other change.
  *
  * The fallback capacities are only used if the API cannot be reached — the
- * real values (1500 / 999.36 / 1522.08 kWp) come from /sites/{id}.
+ * real values (1500 / 999.36 / 1522.08 / 650.88 kWp) come from /sites/{id}.
  */
 export const SITE_REGISTRY: SiteDescriptor[] = [
   { siteId: 4956359, fallbackName: 'MEA Solar Roof - หาดใหญ่', fallbackPeakPowerKwp: 1500.0, fallbackCity: 'หาดใหญ่' },
   { siteId: 4821237, fallbackName: 'MEA Solar Roof - ตรัง', fallbackPeakPowerKwp: 999.36, fallbackCity: 'ตรัง' },
   { siteId: 4947126, fallbackName: 'MEA Solar Roof - ปัตตานี', fallbackPeakPowerKwp: 1522.08, fallbackCity: 'ปัตตานี' },
+  { siteId: 4817295, fallbackName: 'MEA Solar Roof - สุราษฎร์ธานี', fallbackPeakPowerKwp: 650.88, fallbackCity: 'สุราษฎร์ธานี' },
 ];
 
 export interface ResolvedConfig {
@@ -80,9 +110,17 @@ export interface ResolvedConfig {
   apiBase: string;
   sites: SiteDescriptor[];
   allowedOrigins: string[];
+  maxCallsPerMin: number;
+  monthlyCallBudget: number;
 }
 
 export class ConfigError extends Error {}
+
+/** A positive integer from env, or the default when absent or malformed. */
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const n = Number((raw || '').trim());
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
 
 function parseCsv(raw: string | undefined): string[] {
   if (!raw) return [];
@@ -129,5 +167,52 @@ export function resolveConfig(env: WorkerEnv): ResolvedConfig {
     apiBase: (env.SOLAREDGE_API_BASE || DEFAULT_API_BASE).trim().replace(/\/+$/, ''),
     sites,
     allowedOrigins: parseCsv(env.ALLOWED_ORIGINS),
+    maxCallsPerMin: positiveInt(env.SOLAREDGE_MAX_CALLS_PER_MIN, DEFAULT_MAX_CALLS_PER_MIN),
+    monthlyCallBudget: positiveInt(
+      env.SOLAREDGE_MONTHLY_CALL_BUDGET,
+      DEFAULT_MONTHLY_CALL_BUDGET
+    ),
   };
+}
+
+/**
+ * Narrow (or extend) a resolved config to an explicit list of site IDs.
+ *
+ * The dashboard now owns the building -> site-ID mapping: an operator types IDs
+ * into the binding modal, and the browser asks for exactly those. The env
+ * allow-list stays as the DEFAULT set for a cold open, not as a hard ceiling —
+ * otherwise a freshly typed ID could never be fetched.
+ *
+ * The security boundary is the credential, not this list. A Fleet API Key only
+ * covers its own account, so a requested ID outside it comes back 403 from
+ * SolarEdge rather than leaking anything.
+ *
+ * An ID with no registry entry gets a descriptor with an empty fallback name
+ * and zero fallback capacity: those are only used when the API cannot be
+ * reached, and inventing a name for a site we know nothing about would be worse
+ * than showing none.
+ */
+export function withRequestedSites(cfg: ResolvedConfig, requested: number[]): ResolvedConfig {
+  const ids: number[] = [];
+  for (const id of requested) {
+    if (!Number.isInteger(id) || id <= 0 || ids.includes(id)) continue;
+    ids.push(id);
+    // A hard cap so a malformed query string cannot make the backend fan out
+    // across hundreds of sites and burn the call budget in one request.
+    if (ids.length >= 24) break;
+  }
+  if (ids.length === 0) return cfg;
+
+  const byId = new Map(SITE_REGISTRY.map((s) => [s.siteId, s]));
+  const sites: SiteDescriptor[] = ids.map(
+    (siteId) =>
+      byId.get(siteId) ?? {
+        siteId,
+        fallbackName: `SolarEdge Site ${siteId}`,
+        fallbackPeakPowerKwp: 0,
+        fallbackCity: '',
+      }
+  );
+
+  return { ...cfg, sites };
 }

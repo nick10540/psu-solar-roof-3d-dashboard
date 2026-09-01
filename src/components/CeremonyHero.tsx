@@ -27,10 +27,16 @@ export const CeremonyHero: React.FC = () => {
       className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-4 pt-2.5"
     >
       <div className="flex items-center gap-3 sm:gap-4 rounded-2xl bg-slate-950/55 px-4 py-1.5 backdrop-blur-[2px]">
+        {/*
+          MEA on the left, PSU on the right, both larger than before.
+
+          The wordmark version of the MEA mark is wider than it is tall, so it
+          gets `w-auto` off a taller height cap rather than a square box.
+        */}
         <img
-          src="/logos/right-logo.png"
-          alt="ตราสัญลักษณ์มหาวิทยาลัยสงขลานครินทร์"
-          className="h-9 sm:h-11 xl:h-14 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)]"
+          src="/logos/mea-logo.png"
+          alt="ตราสัญลักษณ์การไฟฟ้านครหลวง"
+          className="h-12 sm:h-16 xl:h-20 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)]"
         />
 
         <h1 className="text-base sm:text-xl xl:text-3xl font-black tracking-wide whitespace-nowrap text-white drop-shadow-[0_3px_12px_rgba(0,0,0,0.95)] font-['Prompt',sans-serif]">
@@ -38,9 +44,9 @@ export const CeremonyHero: React.FC = () => {
         </h1>
 
         <img
-          src="/logos/left-logo.png"
-          alt="ตราสัญลักษณ์การไฟฟ้านครหลวง"
-          className="h-9 sm:h-11 xl:h-14 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)]"
+          src="/logos/right-logo.png"
+          alt="ตราสัญลักษณ์มหาวิทยาลัยสงขลานครินทร์"
+          className="h-12 sm:h-16 xl:h-20 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)]"
         />
       </div>
     </div>

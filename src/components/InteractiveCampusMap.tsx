@@ -193,9 +193,8 @@ export const InteractiveCampusMap: React.FC<InteractiveCampusMapProps> = ({
       const currentPowerKw = overview ? overview.currentPowerKw : site.currentPowerKw;
       const lifetimeEnergyKwh = overview ? overview.lifetimeEnergyKwh : site.lifetimeEnergyKwh;
       const capacityKwp = site.capacityKwp;
-      const lifetimeFormatted = lifetimeEnergyKwh >= 10000 
-        ? `${(lifetimeEnergyKwh / 1000).toFixed(1)} MWh` 
-        : `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
+      // kWh dashboard-wide: no MWh switch, so this cell never changes scale.
+      const lifetimeFormatted = `${Math.round(lifetimeEnergyKwh).toLocaleString()} kWh`;
 
       // Custom Google Earth 3D Blue Pin & Telemetry Card HTML
       const pinHtml = `

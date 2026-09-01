@@ -11,8 +11,17 @@
  *   GET /api/solaredge/health                liveness and configuration
  */
 
-import { ConfigError, resolveConfig, WorkerEnv } from './config.js';
-import { fetchAllOverviews, upstreamCallsToday } from './solaredge.js';
+import {
+  ConfigError,
+  resolveConfig,
+  withRequestedSites,
+  WorkerEnv,
+} from './config.js';
+import {
+  fetchAllOverviews,
+  upstreamCallsThisMonth,
+  upstreamCallsToday,
+} from './solaredge.js';
 
 function corsHeaders(request: Request, allowedOrigins: string[]): Record<string, string> {
   const origin = request.headers.get('Origin');
@@ -83,6 +92,11 @@ export async function handleRequest(request: Request, env: WorkerEnv): Promise<R
         // loaded when two environments are being compared.
         apiKeyPreview: `${cfg.apiKey.slice(0, 6)}…`,
         upstreamCallsToday: upstreamCallsToday(),
+        upstreamCallsThisMonth: upstreamCallsThisMonth(),
+        // The two ceilings this backend holds itself to, so a kiosk can be
+        // checked against the plan without reading the source.
+        maxCallsPerMin: cfg.maxCallsPerMin,
+        monthlyCallBudget: cfg.monthlyCallBudget,
       },
       200,
       cors
@@ -92,9 +106,18 @@ export async function handleRequest(request: Request, env: WorkerEnv): Promise<R
   if (path === '/api/solaredge/overview') {
     const forceRefresh = url.searchParams.get('refresh') === '1';
 
+    // The dashboard owns the building -> site-ID mapping now, so it asks for
+    // exactly the IDs its operator has bound. Absent or unparseable, we fall
+    // back to the env-configured set so a bare GET still works.
+    const requested = (url.searchParams.get('sites') || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    const effective = requested.length > 0 ? withRequestedSites(cfg, requested) : cfg;
+
     // fetchAllOverviews reports every failure per site rather than throwing:
     // one site hitting a rate limit must not blank out the ones that worked.
-    const payload = await fetchAllOverviews(cfg, { forceRefresh });
+    const payload = await fetchAllOverviews(effective, { forceRefresh });
     return json(payload, 200, cors);
   }
 

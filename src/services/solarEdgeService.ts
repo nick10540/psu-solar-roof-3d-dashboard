@@ -22,8 +22,8 @@
  * 4. Building-Site Dynamic Binding persistence
  * 5. AbortSignal support so an in-flight poll can be cancelled on unmount
  *
- * Live sites (สุราษฎร์ธานี and ภูเก็ต have no site ID yet and stay unbound):
- *   4956359 หาดใหญ่ | 4821237 ตรัง | 4947126 ปัตตานี
+ * Live sites (ภูเก็ต has no site ID yet and stays unbound):
+ *   4956359 หาดใหญ่ | 4821237 ตรัง | 4947126 ปัตตานี | 4817295 สุราษฎร์ธานี
  */
 
 import {
@@ -34,6 +34,7 @@ import {
   SolarEdgeBackendStatus,
   SolarEdgeSiteStatus,
   BuildingSiteBinding,
+  bindingSiteIds,
   SolarEdgeConfig
 } from '../types';
 import { INITIAL_SOLAREDGE_CONFIG } from '../data/mockSolarData';
@@ -160,12 +161,13 @@ export const LIVE_SITE_IDS = {
   TRANG: 4821237,
   HATYAI: 4956359,
   PATTANI: 4947126,
+  SURAT: 4817295,
 } as const;
 
 // 5 MEA Solar Roof Regional Sites for Demo / Mock Mode & API Ready
 export const MOCK_SOLAREDGE_SITES: SolarEdgeRawSite[] = [
   {
-    id: 2849101,
+    id: 4817295,
     name: 'MEA Solar Roof - สุราษฎร์ธานี',
     accountId: 91401,
     status: 'Active',
@@ -447,6 +449,8 @@ export function transformSolarEdgeOverview(
     lifetimeEnergyMwh,
     lastUpdateTime,
     rawTimestamp,
+    // Straight through from the backend, which read it from SolarEdge.
+    co2Kg: rawOverview.co2Kg ?? null,
     isMockData,
   };
 }
@@ -517,6 +521,15 @@ export interface FetchSitesResult {
 export interface FetchAccountDataOptions extends SolarEdgeRequestOptions {
   forceRefresh?: boolean;
   useMock?: boolean;
+  /**
+   * The SolarEdge site IDs the dashboard actually wants.
+   *
+   * The union of every bound pin's IDs. Sent so the backend fetches exactly
+   * what is on screen — an ID the operator typed into the binding modal is
+   * not in the backend's env list, and without this it would never be read.
+   * Empty leaves the backend on its own configured set.
+   */
+  siteIds?: number[];
   /** Skip the live call and serve cache when the daily budget is nearly spent. Default true. */
   respectQuotaReserve?: boolean;
 }
@@ -610,6 +623,7 @@ export async function fetchSolarEdgeAccountData(
     forceRefresh = false,
     useMock = false,
     respectQuotaReserve = true,
+    siteIds = [],
     signal,
   } = options;
 
@@ -666,7 +680,11 @@ export async function fetchSolarEdgeAccountData(
 
   try {
     incrementDailyCallCount(1);
-    const payload = await fetchBackend(forceRefresh ? '/overview?refresh=1' : '/overview', {
+    const params = new URLSearchParams();
+    if (forceRefresh) params.set('refresh', '1');
+    if (siteIds.length > 0) params.set('sites', siteIds.join(','));
+    const query = params.toString();
+    const payload = await fetchBackend(query ? `/overview?${query}` : '/overview', {
       signal,
     });
 
@@ -826,42 +844,49 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
     if (!raw) {
       // Default bindings.
       //
-      // Only the three buildings with a real SolarEdge site ID are bound.
-      // สุราษฎร์ธานี (1) and ภูเก็ต (2) have no site provisioned yet, so binding
-      // them to a placeholder would put invented numbers on stage under a
-      // "Live API" badge. Unbound, they render "ไม่มีข้อมูล" in live mode and
-      // still show their simulated figures in mock mode. Add an entry here the
-      // day their IDs are issued — nothing else needs to change.
+      // Only the four buildings with a real SolarEdge site ID are bound.
+      // ภูเก็ต (2) has no site provisioned yet, so binding it to a placeholder
+      // would put invented numbers on stage under a "Live API" badge. Unbound,
+      // it renders "ไม่มีข้อมูล" in live mode and still shows its simulated
+      // figures in mock mode.
+      //
+      // These are only a starting point now: the operator can type any IDs into
+      // the binding modal, up to MAX_SITE_IDS_PER_BUILDING per pin, and that
+      // choice is what persists here.
       const now = new Date().toISOString();
-      const defaultBindings: Record<number, BuildingSiteBinding> = {
-        3: {
-          buildingId: 3,
-          siteId: LIVE_SITE_IDS.TRANG,
-          siteName: 'MEA Solar Roof - ตรัง',
-          primaryMetric: 'currentPower',
-          isBound: true,
-          boundAt: now,
-        },
-        4: {
-          buildingId: 4,
-          siteId: LIVE_SITE_IDS.HATYAI,
-          siteName: 'MEA Solar Roof - หาดใหญ่',
-          primaryMetric: 'currentPower',
-          isBound: true,
-          boundAt: now,
-        },
-        5: {
-          buildingId: 5,
-          siteId: LIVE_SITE_IDS.PATTANI,
-          siteName: 'MEA Solar Roof - ปัตตานี',
-          primaryMetric: 'currentPower',
-          isBound: true,
-          boundAt: now,
-        },
+      const seed = (
+        buildingId: number,
+        siteId: number,
+        siteName: string
+      ): BuildingSiteBinding => ({
+        buildingId,
+        siteId,
+        siteIds: [siteId],
+        siteName,
+        primaryMetric: 'currentPower',
+        isBound: true,
+        boundAt: now,
+      });
+
+      return {
+        1: seed(1, LIVE_SITE_IDS.SURAT, 'MEA Solar Roof - สุราษฎร์ธานี'),
+        3: seed(3, LIVE_SITE_IDS.TRANG, 'MEA Solar Roof - ตรัง'),
+        4: seed(4, LIVE_SITE_IDS.HATYAI, 'MEA Solar Roof - หาดใหญ่'),
+        5: seed(5, LIVE_SITE_IDS.PATTANI, 'MEA Solar Roof - ปัตตานี'),
       };
-      return defaultBindings;
     }
-    return JSON.parse(raw);
+
+    // Migrate in place. A v5 record carries `siteId` and no `siteIds`; reading
+    // it as multi-ID without this would leave every pin unbound after upgrade.
+    const parsed = JSON.parse(raw) as Record<number, BuildingSiteBinding>;
+    for (const key of Object.keys(parsed)) {
+      const b = parsed[Number(key)];
+      if (!b) continue;
+      if (!Array.isArray(b.siteIds)) {
+        b.siteIds = b.siteId != null ? [b.siteId] : [];
+      }
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -870,8 +895,18 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
 export function saveBuildingSiteBinding(binding: BuildingSiteBinding): Record<number, BuildingSiteBinding> {
   try {
     const current = loadBuildingSiteBindings();
-    if (binding.isBound && binding.siteId !== null) {
-      current[binding.buildingId] = binding;
+    // `isBound` alone is not enough: a binding saved with every ID field
+    // cleared has nothing to fetch, and keeping it would leave the pin claiming
+    // to be live while showing no data.
+    const ids = bindingSiteIds(binding);
+    if (binding.isBound && ids.length > 0) {
+      current[binding.buildingId] = {
+        ...binding,
+        siteIds: ids,
+        // Keep the legacy field pointing at the first ID so an older build
+        // rolled back onto this storage still shows something sensible.
+        siteId: ids[0],
+      };
     } else {
       delete current[binding.buildingId];
     }

@@ -11,7 +11,12 @@
  * reshaping, and confines every v2 quirk to this one file.
  */
 
-import { OVERVIEW_CACHE_TTL_MS, ResolvedConfig, SiteDescriptor } from './config.js';
+import {
+  OVERVIEW_CACHE_TTL_MS,
+  RATE_LIMIT_WINDOW_MS,
+  ResolvedConfig,
+  SiteDescriptor,
+} from './config.js';
 
 
 // ---------------------------------------------------------------------------
@@ -31,6 +36,14 @@ export interface WireOverview {
   lastDayData: WireEnergyMetric;
   currentPower: { power: number }; // Watts
   measuredBy: string;
+  /**
+   * Cumulative CO2 avoided in KILOGRAMS, as SolarEdge itself reports it.
+   *
+   * null when the endpoint could not be read — never a locally derived
+   * stand-in, so a failure cannot put an invented figure on screen under a
+   * "Live API" badge.
+   */
+  co2Kg: number | null;
 }
 
 export interface WireSite {
@@ -93,10 +106,81 @@ function countUpstreamCall(n = 1): void {
   const day = todayKey();
   if (callCounter.day !== day) callCounter = { day, count: 0 };
   callCounter.count += n;
+  bumpMonthCounter(n);
 }
 
 export function upstreamCallsToday(): number {
   return callCounter.day === todayKey() ? callCounter.count : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Plan-limit enforcement
+//
+// Two ceilings, enforced separately because they fail differently.
+//
+// Per MINUTE (10): a burst that crosses it returns 429 for whichever sites
+// happen to sit last in the list, which reads on a 72" screen as "that campus
+// is broken" rather than "we asked too fast". A cold start over four sites
+// needs 16 requests, so the limiter has to WAIT — fetching serially, which
+// this module already did, is not on its own enough.
+//
+// Per MONTH (2000): crossing it would fail every request for the rest of the
+// month. Better to stop fetching, keep serving the last good payload, and say
+// which of the two limits we are sitting against.
+//
+// Both counters live in module memory, matching the existing daily counter: a
+// restart forgets them and on Cloudflare each isolate counts its own. Enough
+// to protect the budget, not an accounting record.
+// ---------------------------------------------------------------------------
+
+let monthCounter = { month: '', count: 0 };
+
+function monthKey(): string {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function bumpMonthCounter(n: number): void {
+  const month = monthKey();
+  if (monthCounter.month !== month) monthCounter = { month, count: 0 };
+  monthCounter.count += n;
+}
+
+export function upstreamCallsThisMonth(): number {
+  return monthCounter.month === monthKey() ? monthCounter.count : 0;
+}
+
+/** Times of recent upstream calls, oldest first, trimmed to the window. */
+const recentCallTimes: number[] = [];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Block until one more request fits inside the per-minute ceiling.
+ *
+ * Waits rather than throws: a cold start legitimately needs more requests
+ * than one minute allows, and a 5-minute poll has the time to spend.
+ */
+async function reserveUpstreamSlot(maxPerMin: number): Promise<void> {
+  for (;;) {
+    const now = Date.now();
+    while (recentCallTimes.length > 0 && now - recentCallTimes[0] >= RATE_LIMIT_WINDOW_MS) {
+      recentCallTimes.shift();
+    }
+    if (recentCallTimes.length < maxPerMin) {
+      recentCallTimes.push(now);
+      return;
+    }
+    // +250ms so a clock edge cannot let the call through a tick early.
+    await sleep(RATE_LIMIT_WINDOW_MS - (now - recentCallTimes[0]) + 250);
+  }
+}
+
+/** Forget the window and the month tally. Tests and manual resets only. */
+export function resetCallLimiter(): void {
+  recentCallTimes.length = 0;
+  monthCounter = { month: '', count: 0 };
 }
 
 // ---------------------------------------------------------------------------
@@ -108,11 +192,27 @@ interface CacheEntry {
   storedAt: number;
 }
 
-let overviewCache: CacheEntry | null = null;
-let overviewInflight: Promise<OverviewPayload> | null = null;
+/**
+ * Cache and in-flight promise, keyed by the requested site set.
+ *
+ * A single slot was fine while the site list came from env and never
+ * changed. Now the browser asks for whichever IDs the operator has bound,
+ * so two different requests would otherwise serve each other's payload —
+ * a pin would show another campus's numbers for up to the cache TTL.
+ */
+const overviewCaches = new Map<string, CacheEntry>();
+const overviewInflights = new Map<string, Promise<OverviewPayload>>();
+
+function siteSetKey(cfg: ResolvedConfig): string {
+  return cfg.sites
+    .map((s) => s.siteId)
+    .slice()
+    .sort((a, b) => a - b)
+    .join(',');
+}
 
 export function clearOverviewCache(): void {
-  overviewCache = null;
+  overviewCaches.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +262,16 @@ function describeApiError(siteId: number, status: number, body: string): string 
  */
 async function getJson<T>(cfg: ResolvedConfig, siteId: number, path: string): Promise<T> {
   const url = `${cfg.apiBase}${path}`;
+
+  if (upstreamCallsThisMonth() >= cfg.monthlyCallBudget) {
+    throw new UpstreamError(
+      `งบเรียก API ประจำเดือนหมดแล้ว (${cfg.monthlyCallBudget} ครั้ง) — ` +
+        `กำลังแสดงข้อมูลล่าสุดที่แคชไว้`,
+      429
+    );
+  }
+
+  await reserveUpstreamSlot(cfg.maxCallsPerMin);
 
   let res: Response;
   try {
@@ -275,6 +385,8 @@ interface ColdTotals {
   monthlyWh: number;
   yearlyWh: number;
   lifetimeWh: number;
+  /** SolarEdge's cumulative CO2 in kg, or null if that call failed. */
+  co2Kg: number | null;
 }
 
 /**
@@ -290,6 +402,44 @@ const coldTotalsCache = new Map<number, { totals: ColdTotals; storedAt: number }
 
 export function clearColdTotalsCache(): void {
   coldTotalsCache.clear();
+}
+
+/**
+ * Environmental benefits, straight from SolarEdge.
+ *
+ * GET /sites/{id}/environmental-benefits -> { co2Emissions, evMiles, unit }.
+ *
+ * `co2Emissions` is CUMULATIVE, not today-only — the exception to the v2
+ * rule documented above. Verified against the portal's own Environmental
+ * Benefits panel for site 4956359: it read 601.653 kg while this endpoint
+ * returned 598.73 shortly before. Reading it as a daily figure would
+ * understate the tile by orders of magnitude.
+ *
+ * Only co2Emissions is taken. The response also carries `evMiles` (which
+ * holds KILOMETRES when unit is METRIC, despite the name) and no tree
+ * count at all — the portal derives trees from CO2 client-side.
+ *
+ * Returns null rather than throwing: losing this tile must never cost the
+ * site its energy reading.
+ */
+async function loadEnvironmentalCo2Kg(
+  cfg: ResolvedConfig,
+  siteId: number
+): Promise<number | null> {
+  try {
+    const raw = await getJson<unknown>(
+      cfg,
+      siteId,
+      `/sites/${siteId}/environmental-benefits`
+    );
+    const body = (raw ?? {}) as { co2Emissions?: unknown; unit?: unknown };
+    const value = num(body.co2Emissions);
+    if (value <= 0) return null;
+    // METRIC reports kg. Anything else is pounds.
+    return body.unit === 'METRIC' ? value : value * 0.45359237;
+  } catch {
+    return null;
+  }
 }
 
 async function loadColdTotals(
@@ -324,7 +474,21 @@ async function loadColdTotals(
     if (p.timestamp.startsWith(thisYear)) yearlyWh += p.value;
   }
 
-  const totals: ColdTotals = { monthlyWh, yearlyWh, lifetimeWh: sumNonNull(points) };
+  // Folded in here rather than fetched per refresh. CO2 accumulates at exactly
+  // the rate lifetime energy does (SolarEdge derives it from that same figure
+  // at 0.392 kg/kWh), so it belongs on this cache, not on the live path.
+  //
+  // Fetching it every refresh took the steady-state cost for four sites from
+  // 8 upstream calls to 12, crossing the 10/min ceiling, so the limiter
+  // stalled EVERY poll by ~60s and the dashboard blanked waiting for it.
+  const co2Kg = await loadEnvironmentalCo2Kg(cfg, siteId);
+
+  const totals: ColdTotals = {
+    monthlyWh,
+    yearlyWh,
+    lifetimeWh: sumNonNull(points),
+    co2Kg,
+  };
   coldTotalsCache.set(siteId, { totals, storedAt: Date.now() });
   return totals;
 }
@@ -491,6 +655,7 @@ async function fetchOneSite(
       lastYearData: { energy: cold.yearlyWh },
       lifetimeData: { energy: cold.lifetimeWh },
       measuredBy: 'INVERTER',
+      co2Kg: cold.co2Kg,
     };
 
     return { site, overview, power };
@@ -516,13 +681,17 @@ export async function fetchAllOverviews(
 ): Promise<OverviewPayload> {
   const { forceRefresh = false } = options;
 
-  if (!forceRefresh && overviewCache && Date.now() - overviewCache.storedAt < OVERVIEW_CACHE_TTL_MS) {
-    return { ...overviewCache.payload, fromCache: true };
+  const key = siteSetKey(cfg);
+  const cached = overviewCaches.get(key);
+
+  if (!forceRefresh && cached && Date.now() - cached.storedAt < OVERVIEW_CACHE_TTL_MS) {
+    return { ...cached.payload, fromCache: true };
   }
 
   // Collapse concurrent misses into one upstream round. Two kiosk tabs
   // refreshing together should cost one fetch, not two.
-  if (overviewInflight) return overviewInflight;
+  const inflight = overviewInflights.get(key);
+  if (inflight) return inflight;
 
   const pending = (async (): Promise<OverviewPayload> => {
     // One site at a time. Each site costs 2-3 upstream requests and the API's
@@ -558,19 +727,25 @@ export async function fetchAllOverviews(
     // Only cache a round that produced at least one reading. Caching a total
     // outage for 4.5 minutes would turn a transient blip into a visible gap.
     if (Object.keys(overviews).length > 0) {
-      overviewCache = { payload, storedAt: Date.now() };
+      overviewCaches.set(key, { payload, storedAt: Date.now() });
     }
 
     return payload;
   })().finally(() => {
-    overviewInflight = null;
+    overviewInflights.delete(key);
   });
 
-  overviewInflight = pending;
+  overviewInflights.set(key, pending);
   return pending;
 }
 
 /** Last good payload, used to keep the screen alive through an upstream outage. */
 export function lastGoodPayload(): OverviewPayload | null {
-  return overviewCache ? { ...overviewCache.payload, fromCache: true } : null;
+  // Newest cached set wins: with several site sets in play, the most recent
+  // round is the closest thing to "what the screen last showed".
+  let newest: CacheEntry | null = null;
+  for (const entry of overviewCaches.values()) {
+    if (!newest || entry.storedAt > newest.storedAt) newest = entry;
+  }
+  return newest ? { ...newest.payload, fromCache: true } : null;
 }

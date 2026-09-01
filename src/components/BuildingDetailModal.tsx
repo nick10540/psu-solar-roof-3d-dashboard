@@ -129,9 +129,9 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
   // reports it. The mock estimate is kept but no longer masquerades as a
   // reading; it is captioned as simulated like everything else in mock mode.
   const monthlyText = live
-    ? `${live.monthlyEnergyMwh} MWh`
+    ? `${Math.round(live.monthlyEnergyKwh).toLocaleString()} kWh`
     : isSimulated
-      ? `${(building.capacityKwp * 0.115).toFixed(1)} MWh`
+      ? `${Math.round(building.capacityKwp * 115).toLocaleString()} kWh`
       : NO_DATA;
 
   return (

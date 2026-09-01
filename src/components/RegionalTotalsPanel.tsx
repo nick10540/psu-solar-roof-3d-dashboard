@@ -1,18 +1,24 @@
 /**
  * RegionalTotalsPanel.tsx
- * Combined production across every mapped site, shown bottom-right of the map.
+ * Combined production across every mapped site, shown top-right of the map.
  *
- *   1. กำลังติดตั้งรวม            (MWp)      - hero figure
- *   2. Production Today | Production Accumulated   (kWh)
- *   3. Reduce CO2       | Tree                     (ton Carbon eq / trees)
+ *   1. กำลังติดตั้งรวม            (kWp)      - hero figure
+ *   2. พลังงานวันนี้ | พลังงานรวม                (kWh)
+ *   3. ลดการปล่อย CO₂ | ปลูกต้นไม้เทียบเท่า        (tonCO₂ / ต้น)
+ *
+ * Labels are Thai, matching the pin cards on the map. Units are fixed
+ * dashboard-wide: energy is always kWh and CO2 is always tonCO₂, never
+ * switched by magnitude.
  *
  * Notes for anyone editing this:
  *
  *  - Every figure is a `MetricValue`, i.e. `number | null`. `null` renders as
  *    "no data", never as 0 - zero is a real reading at night and must stay
  *    distinguishable from "not connected".
- *  - CO2 and Tree are DERIVED from the accumulated figure displayed directly
- *    above them. On a 72" screen people check the arithmetic.
+ *  - CO2 comes from SolarEdge's own environmental-benefits reading, and Tree
+ *    is derived from that CO2 (not from kWh). The arithmetic therefore ties
+ *    back to the portal rather than to the accumulated cell above it, which
+ *    people on a 72" screen will check.
  *  - Uses `glass-panel-static` (no backdrop-filter): a large blurred panel over
  *    a live WebGL map re-rasterises every frame the map moves.
  */
@@ -21,31 +27,37 @@ import React from 'react';
 import { Zap, Sun, BatteryCharging, Leaf, Trees, Database, WifiOff } from 'lucide-react';
 import { RegionalTotals, MetricValue } from '../services/siteMetricsService';
 import {
-  co2TonsFromKwh,
-  treesFromKwh,
-  formatNumber,
+  co2TonsFromKg,
+  treesFromCo2Kg,
 } from '../utils/energyEquivalents';
 import { NO_DATA } from './metricDisplay';
+import { CountUp } from './CountUp';
 
 interface RegionalTotalsPanelProps {
   totals: RegionalTotals;
 }
 
-/** Format a metric, or the em-dash placeholder when there is nothing to show. */
-function fmt(value: MetricValue, decimals = 0): string {
-  return value === null ? NO_DATA : formatNumber(value, decimals);
-}
 
 interface MetricProps {
   icon: React.ReactNode;
   label: string;
-  value: string;
+  /** The raw number, so the cell can animate to it. `null` renders as no-data. */
+  value: MetricValue;
+  decimals?: number;
   unit: string;
   tone: string;
   hasData: boolean;
 }
 
-const Metric: React.FC<MetricProps> = ({ icon, label, value, unit, tone, hasData }) => (
+const Metric: React.FC<MetricProps> = ({
+  icon,
+  label,
+  value,
+  decimals = 0,
+  unit,
+  tone,
+  hasData,
+}) => (
   <div className="bg-slate-900/70 rounded-xl border border-sky-500/15 px-2.5 py-2">
     <div className="flex items-center gap-1 text-[10px] text-slate-400 leading-none mb-1.5">
       <span className={hasData ? tone : 'text-slate-600'}>{icon}</span>
@@ -53,7 +65,11 @@ const Metric: React.FC<MetricProps> = ({ icon, label, value, unit, tone, hasData
     </div>
     <div className="flex items-baseline gap-1 font-mono">
       <span className={`text-lg font-bold leading-none ${hasData ? tone : 'text-slate-600'}`}>
-        {value}
+        {value === null ? (
+          NO_DATA
+        ) : (
+          <CountUp target={value} decimals={decimals} placeholder={NO_DATA} />
+        )}
       </span>
       {hasData && <span className="text-[9px] text-slate-400 font-normal">{unit}</span>}
     </div>
@@ -63,18 +79,23 @@ const Metric: React.FC<MetricProps> = ({ icon, label, value, unit, tone, hasData
 const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals }) => {
   const { hasData, mode, siteCount, sitesWithData } = totals;
 
-  const capacityMwp: MetricValue =
-    totals.totalCapacityKwp === null ? null : totals.totalCapacityKwp / 1000;
+  // kWp, not MWp: the per-site cards print kWp, and a headline in a
+  // different unit invites the two to be read as the same scale.
+  const capacityKwp: MetricValue = totals.totalCapacityKwp;
   const accumulated = totals.lifetimeEnergyKwh;
-  const co2Tons: MetricValue = accumulated === null ? null : co2TonsFromKwh(accumulated);
-  const trees: MetricValue = accumulated === null ? null : treesFromKwh(accumulated);
+
+  // CO2 and trees now come from SolarEdge's own CO2 figure rather than from
+  // lifetime kWh x 0.56. The old derivation disagreed with the portal on
+  // both counts, and trees by roughly 7x.
+  const co2Tons: MetricValue = totals.co2Kg === null ? null : co2TonsFromKg(totals.co2Kg);
+  const trees: MetricValue = totals.co2Kg === null ? null : treesFromCo2Kg(totals.co2Kg);
 
   const isLive = mode === 'live';
   /** Some pins reporting, some not - say so rather than implying a full picture. */
   const partial = hasData && sitesWithData < siteCount;
 
   return (
-    <div className="glass-panel-static rounded-2xl border border-sky-500/30 shadow-2xl px-3 py-2.5 w-[268px]">
+    <div className="glass-panel-static rounded-2xl border border-sky-500/30 shadow-2xl px-3.5 py-3 w-[340px]">
       {/* Header: name the data source, so nobody has to guess what they are looking at */}
       <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-slate-700/60">
         <span className="text-[11px] font-bold text-amber-300 tracking-wide">
@@ -121,10 +142,18 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
               hasData ? 'text-sky-300' : 'text-slate-600'
             }`}
           >
-            {fmt(capacityMwp, capacityMwp !== null && capacityMwp >= 100 ? 0 : 2)}
+            {capacityKwp === null ? (
+              NO_DATA
+            ) : (
+              <CountUp
+                target={capacityKwp}
+                decimals={0}
+                duration={1100}
+              />
+            )}
           </span>
-          {capacityMwp !== null && (
-            <span className="text-xs text-sky-400/80 font-normal">MWp</span>
+          {capacityKwp !== null && (
+            <span className="text-xs text-sky-400/80 font-normal">kWp</span>
           )}
         </div>
       </div>
@@ -133,16 +162,17 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
       <div className="grid grid-cols-2 gap-1.5 mb-1.5">
         <Metric
           icon={<Sun className="w-3 h-3" />}
-          label="Production Today"
-          value={fmt(totals.todayEnergyKwh, 1)}
+          label="พลังงานวันนี้"
+          value={totals.todayEnergyKwh}
+          decimals={1}
           unit="kWh"
           tone="text-amber-300"
           hasData={totals.todayEnergyKwh !== null}
         />
         <Metric
           icon={<BatteryCharging className="w-3 h-3" />}
-          label="Production Accum."
-          value={fmt(accumulated, 0)}
+          label="พลังงานรวม"
+          value={accumulated}
           unit="kWh"
           tone="text-emerald-300"
           hasData={accumulated !== null}
@@ -153,17 +183,18 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
       <div className="grid grid-cols-2 gap-1.5">
         <Metric
           icon={<Leaf className="w-3 h-3" />}
-          label="Reduce CO2"
-          value={fmt(co2Tons, 1)}
-          unit="ton Carbon eq"
+          label="ลดการปล่อย CO₂"
+          value={co2Tons}
+          decimals={1}
+          unit="tonCO₂"
           tone="text-teal-300"
           hasData={co2Tons !== null}
         />
         <Metric
           icon={<Trees className="w-3 h-3" />}
-          label="Tree"
-          value={fmt(trees, 0)}
-          unit="trees"
+          label="ปลูกต้นไม้เทียบเท่า"
+          value={trees}
+          unit="ต้น"
           tone="text-lime-300"
           hasData={trees !== null}
         />

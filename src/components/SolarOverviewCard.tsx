@@ -92,7 +92,7 @@ export const SolarOverviewCard: React.FC<SolarOverviewCardProps> = ({ overview, 
             <span className="text-sm sm:text-base font-bold font-mono text-teal-200 tracking-tight">
               {overview.co2ReducedTons.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
             </span>
-            <span className="text-[10px] text-slate-400 ml-1 font-mono">ตัน</span>
+            <span className="text-[10px] text-slate-400 ml-1 font-mono">tonCO₂</span>
           </div>
         </div>
       </div>

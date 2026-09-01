@@ -74,13 +74,20 @@ export const MAP_MAX_BOUNDS: [[number, number], [number, number]] = [
   [135.0, 38.0], // north-east
 ];
 
-/** Regional centre between the 5 MEA sites. */
-export const REGIONAL_CENTER: [number, number] = [99.85, 7.95];
+/**
+ * Default camera target.
+ *
+ * NOT the geometric centroid of the five sites — it is the framing the
+ * operators picked on the 72" panel and asked to keep. Sitting north-east of
+ * the centroid pushes the pins down and left in frame, which is what stops
+ * their cards piling onto each other at this zoom.
+ */
+export const REGIONAL_CENTER: [number, number] = [100.36, 9.153];
 
 // ---------------------------------------------------------------------------
 // Camera envelope
 // ---------------------------------------------------------------------------
-export const DEFAULT_ZOOM = 7.6;
+export const DEFAULT_ZOOM = 7.47;
 /** Raised from 6: at z6 a wide viewport spans ~42 deg, far more than the region needs. */
 export const MIN_ZOOM = 6.5;
 export const MAX_ZOOM = 17;
@@ -97,7 +104,8 @@ export const DEFAULT_PITCH = 60;
  * while still reading as a strong oblique 3D view.
  */
 export const MAX_PITCH = 65;
-export const DEFAULT_BEARING = -18;
+/** Read off the live map after the operators framed the shot by hand. */
+export const DEFAULT_BEARING = 17.3;
 
 /**
  * Tile pyramid depth served by the raster sources.

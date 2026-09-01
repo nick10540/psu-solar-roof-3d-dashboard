@@ -26,7 +26,12 @@ import {
   BuildingInfo,
   BuildingSiteBinding,
   SolarEdgeTransformedOverview,
+  bindingSiteIds,
 } from '../types';
+
+import { capacityKwpFor } from '../config/siteCapacity';
+
+import { CO2_KG_PER_KWH } from '../utils/energyEquivalents';
 
 export type DataSourceMode = 'mock' | 'live';
 
@@ -40,6 +45,8 @@ export interface ResolvedSiteMetrics {
   buildingId: number;
   /** SolarEdge site id this pin is mapped to, if any. */
   siteId: number | null;
+  /** Every SolarEdge site ID feeding this pin. Figures are their sum. */
+  siteIds: number[];
   isBound: boolean;
   /** True only when real, displayable figures are available. */
   hasData: boolean;
@@ -48,6 +55,14 @@ export interface ResolvedSiteMetrics {
   todayEnergyKwh: MetricValue;
   lifetimeEnergyKwh: MetricValue;
   capacityKwp: MetricValue;
+  /**
+   * Cumulative CO2 avoided, in KILOGRAMS.
+   *
+   * In live mode this is SolarEdge's own figure, passed through untouched.
+   * In mock mode it is derived from the simulated lifetime energy, like
+   * every other mock number here.
+   */
+  co2Kg: MetricValue;
   lastUpdateTime: string | null;
 }
 
@@ -61,6 +76,8 @@ export interface RegionalTotals {
   currentPowerKw: MetricValue;
   todayEnergyKwh: MetricValue;
   lifetimeEnergyKwh: MetricValue;
+  /** Sum of the reporting sites' CO2, in kg. */
+  co2Kg: MetricValue;
 }
 
 export function dataSourceModeFromConfig(useMock: boolean): DataSourceMode {
@@ -75,24 +92,34 @@ export function dataSourceModeFromConfig(useMock: boolean): DataSourceMode {
 export function emptySiteMetrics(
   buildingId: number,
   siteId: number | null = null,
-  isBound = false
+  isBound = false,
+  siteIds: number[] = [],
+  capacityKwp: MetricValue = null
 ): ResolvedSiteMetrics {
   return {
     buildingId,
     siteId,
+    siteIds,
     isBound,
     hasData: false,
     source: 'none',
     currentPowerKw: null,
     todayEnergyKwh: null,
     lifetimeEnergyKwh: null,
-    capacityKwp: null,
+    // Capacity survives "no data": it is a nameplate spec, not a reading.
+    capacityKwp,
+    co2Kg: null,
     lastUpdateTime: null,
   };
 }
 
 /**
  * Decide what a single pin may display.
+ *
+ * A pin may be bound to up to MAX_SITE_IDS_PER_BUILDING SolarEdge sites, for a
+ * campus whose array is split across several registrations. Every measured
+ * figure here is the SUM across the bound IDs; the map card is handed one total
+ * and is unaware that more than one site fed it.
  *
  * In live mode an overview carrying `isMockData` is rejected outright - that
  * flag is the service's own marker for a simulated payload, and it must never
@@ -104,29 +131,60 @@ export function resolveSiteMetrics(
   overviews: Record<number, SolarEdgeTransformedOverview>,
   mode: DataSourceMode
 ): ResolvedSiteMetrics {
-  const siteId = binding?.isBound ? binding.siteId ?? null : null;
-  const isBound = siteId !== null;
-  const overview = siteId !== null ? overviews[siteId] ?? null : null;
+  const siteIds = bindingSiteIds(binding);
+  const isBound = siteIds.length > 0;
+  const primaryId = siteIds[0] ?? null;
+
+  /**
+   * Installed capacity, fixed per site rather than read from the API.
+   *
+   * Independent of binding and of mode, so an unbound pin still states what is
+   * on its roof while its production cells read "no data".
+   */
+  const capacityKwp: MetricValue = capacityKwpFor(building.code) ?? building.capacityKwp ?? null;
 
   if (mode === 'live') {
-    // No mapping, no reading, or a simulated payload -> nothing to show.
-    if (!overview || overview.isMockData) {
-      return emptySiteMetrics(building.id, siteId, isBound);
+    const live = siteIds
+      .map((id) => overviews[id])
+      .filter((ov): ov is SolarEdgeTransformedOverview => Boolean(ov) && !ov.isMockData);
+
+    // No mapping, no readings, or only simulated payloads -> nothing measured.
+    // One dead ID among three does NOT blank the pin: the sites that did report
+    // are still real, and their sum is still the best available total.
+    if (live.length === 0) {
+      return emptySiteMetrics(building.id, primaryId, isBound, siteIds, capacityKwp);
     }
+
+    const sum = (pick: (ov: SolarEdgeTransformedOverview) => number): number =>
+      live.reduce((acc, ov) => acc + (pick(ov) || 0), 0);
+
+    // CO2 is summed only over the sites that actually reported one. Treating a
+    // missing figure as 0 would understate the total without saying so.
+    const co2Values = live
+      .map((ov) => ov.co2Kg)
+      .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+
+    // The freshest stamp across the group: the oldest would make a live pin
+    // look stale because one of its sites reports less often.
+    const stamps = live.map((ov) => ov.rawTimestamp).filter(Boolean);
+    const newest = stamps.length > 0 ? stamps.slice().sort().pop() : null;
+    const newestLabel =
+      live.find((ov) => ov.rawTimestamp === newest)?.lastUpdateTime ??
+      live[0].lastUpdateTime;
 
     return {
       buildingId: building.id,
-      siteId,
+      siteId: primaryId,
+      siteIds,
       isBound,
       hasData: true,
       source: 'live',
-      currentPowerKw: overview.currentPowerKw,
-      todayEnergyKwh: overview.dailyEnergyKwh,
-      lifetimeEnergyKwh: overview.lifetimeEnergyKwh,
-      // Capacity comes from the API's peak power once mapped, so that in live
-      // mode every figure on the pin traces back to a real reading.
-      capacityKwp: overview.peakPowerKwp,
-      lastUpdateTime: overview.lastUpdateTime,
+      currentPowerKw: Math.round(sum((ov) => ov.currentPowerKw) * 10) / 10,
+      todayEnergyKwh: Math.round(sum((ov) => ov.dailyEnergyKwh) * 10) / 10,
+      lifetimeEnergyKwh: sum((ov) => ov.lifetimeEnergyKwh),
+      capacityKwp,
+      co2Kg: co2Values.length > 0 ? co2Values.reduce((a, b) => a + b, 0) : null,
+      lastUpdateTime: newestLabel,
     };
   }
 
@@ -136,14 +194,16 @@ export function resolveSiteMetrics(
   // and the simulated clock all move together instead of drifting apart.
   return {
     buildingId: building.id,
-    siteId,
+    siteId: primaryId,
+    siteIds,
     isBound,
     hasData: true,
     source: 'mock',
     currentPowerKw: building.currentPowerKw,
     todayEnergyKwh: building.todayEnergyKwh,
     lifetimeEnergyKwh: building.lifetimeEnergyKwh,
-    capacityKwp: building.capacityKwp,
+    capacityKwp,
+    co2Kg: building.lifetimeEnergyKwh * CO2_KG_PER_KWH,
     lastUpdateTime: null,
   };
 }
@@ -161,9 +221,14 @@ export function resolveAllSiteMetrics(
 /**
  * Roll the pins up into the regional totals.
  *
- * Only reporting sites contribute. If none report, every total is `null` rather
- * than 0 - a dashboard reading "0.0 MWp" looks like a real measurement of
- * nothing, which is exactly the wrong impression.
+ * Only reporting sites contribute to the MEASURED figures. If none report,
+ * those totals are `null` rather than 0 - a dashboard reading "0.0 kWh" looks
+ * like a real measurement of nothing, which is exactly the wrong impression.
+ *
+ * Installed capacity is the exception, and deliberately so: it is a fixed
+ * nameplate figure, so it sums across EVERY pin whether or not that pin is
+ * reporting. The headline therefore states the whole fleet's capacity rather
+ * than only the part that happens to be online.
  */
 export function aggregateSiteMetrics(
   metrics: ResolvedSiteMetrics[],
@@ -171,16 +236,23 @@ export function aggregateSiteMetrics(
 ): RegionalTotals {
   const reporting = metrics.filter((m) => m.hasData);
 
+  const capacityValues = metrics
+    .map((m) => m.capacityKwp)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  const totalCapacityKwp: MetricValue =
+    capacityValues.length > 0 ? capacityValues.reduce((a, b) => a + b, 0) : null;
+
   if (reporting.length === 0) {
     return {
       siteCount: metrics.length,
       sitesWithData: 0,
       hasData: false,
       mode,
-      totalCapacityKwp: null,
+      totalCapacityKwp,
       currentPowerKw: null,
       todayEnergyKwh: null,
       lifetimeEnergyKwh: null,
+      co2Kg: null,
     };
   }
 
@@ -192,9 +264,10 @@ export function aggregateSiteMetrics(
     sitesWithData: reporting.length,
     hasData: true,
     mode,
-    totalCapacityKwp: sum((m) => m.capacityKwp),
+    totalCapacityKwp,
     currentPowerKw: Math.round(sum((m) => m.currentPowerKw) * 10) / 10,
     todayEnergyKwh: Math.round(sum((m) => m.todayEnergyKwh) * 10) / 10,
     lifetimeEnergyKwh: sum((m) => m.lifetimeEnergyKwh),
+    co2Kg: sum((m) => m.co2Kg),
   };
 }

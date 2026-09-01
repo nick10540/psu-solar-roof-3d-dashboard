@@ -47,7 +47,12 @@ import {
   ORBIT_DEG_PER_SEC,
   CAMERA_BADGE_THROTTLE_MS,
 } from '../config/mapConfig';
-import { MARKER_FONT_SIZES, MARKER_CARD } from '../config/markerTypography';
+import {
+  MARKER_FONT_SIZES,
+  MARKER_CARD,
+  markerScaleFor,
+  markerCardOffsetFor,
+} from '../config/markerTypography';
 import { resolveSiteMedia } from '../config/siteMedia';
 import {
   RotateCcw,
@@ -96,6 +101,8 @@ interface MarkerHandle {
   energyValEl: HTMLElement;
   energyUnitEl: HTMLElement;
   capacityEl: HTMLElement;
+  co2ValEl: HTMLElement;
+  co2UnitEl: HTMLElement;
   statusDot: HTMLElement;
   statusText: HTMLElement;
   pinIdEl: HTMLElement;
@@ -111,14 +118,25 @@ interface MarkerHandle {
  * rounded corners, so the padding moved inward onto the content wrapper.
  */
 const CARD_BASE =
-  'glass-panel-static rounded-xl shadow-2xl border text-white cursor-pointer transition-colors duration-200 overflow-hidden';
+  'glass-panel-static w-full rounded-xl shadow-2xl border text-white cursor-pointer transition-colors duration-200 overflow-hidden';
 const CARD_SELECTED = 'border-amber-400/90 bg-slate-900/95 ring-2 ring-amber-400/50';
 const CARD_IDLE = 'border-sky-400/60 bg-slate-950/90 hover:border-sky-300';
 
+/**
+ * CO2 for the per-site card.
+ *
+ * tonCO2 everywhere, including for the small sites where SolarEdge itself
+ * still prints kilograms. One unit across every surface was the explicit
+ * ask: a card reading kg beside one reading ton invites the two to be
+ * compared as if they were the same scale.
+ */
+function formatCo2(kg: number): { value: string; unit: string } {
+  return { value: (kg / 1000).toFixed(2), unit: 'tonCO₂' };
+}
+
+/** Accumulated energy. kWh everywhere - the dashboard never switches to MWh. */
 function formatLifetime(kwh: number): { value: string; unit: string } {
-  return kwh >= 10000
-    ? { value: (kwh / 1000).toFixed(1), unit: 'MWh' }
-    : { value: Math.round(kwh).toLocaleString(), unit: 'kWh' };
+  return { value: Math.round(kwh).toLocaleString(), unit: 'kWh' };
 }
 
 /**
@@ -131,7 +149,22 @@ function createMarkerElement(site: BuildingInfo): {
 } {
   const el = document.createElement('div');
   el.className = 'maplibre-mea-marker select-none';
-  el.style.width = `${MARKER_CARD.widthPx}px`;
+  // One campus is drawn larger than the rest; every other card is pinned to
+  // the same width so they read as a uniform set. Scaling the fonts as well
+  // as the box is what makes the featured card actually look bigger rather
+  // than just roomier.
+  const scale = markerScaleFor(site.code);
+  const s = (px: number): number => Math.round(px * scale);
+
+  // Nudge applied to the card only; the pin itself stays on its true
+  // coordinate, so the map never lies about where a site is.
+  const offset = markerCardOffsetFor(site.code);
+  const cardShift =
+    offset.dx === 0 && offset.dy === 0
+      ? ''
+      : `transform:translate(${offset.dx}px,${offset.dy}px);`;
+
+  el.style.width = `${s(MARKER_CARD.widthPx)}px`;
   el.style.transform = 'translate(-50%, -100%)';
   el.id = `maplibre-marker-site-${site.id}`;
 
@@ -140,7 +173,7 @@ function createMarkerElement(site: BuildingInfo): {
   // the DOM through textContent in patchMarker - so this stays injection-safe.
   const media = resolveSiteMedia(site.code);
   const mediaHtml = media
-    ? `<div data-mea="mediaWrap" class="relative w-full bg-slate-900 overflow-hidden border-b border-sky-500/25" style="height:${MARKER_CARD.mediaHeightPx}px">
+    ? `<div data-mea="mediaWrap" class="relative w-full bg-slate-900 overflow-hidden border-b border-sky-500/25" style="height:${s(MARKER_CARD.mediaHeightPx)}px">
          ${
            media.kind === 'video'
              ? `<video data-mea="mediaEl" class="w-full h-full object-cover" src="${media.url}" autoplay loop muted playsinline preload="metadata"></video>`
@@ -154,7 +187,7 @@ function createMarkerElement(site: BuildingInfo): {
   el.innerHTML = `
     <div data-mea="inner" class="relative flex flex-col items-center group">
       <!-- 1. Floating 3D Telemetry HUD Card -->
-      <div data-mea="cardWrap" class="mb-1" style="pointer-events: auto;">
+      <div data-mea="cardWrap" class="mb-1 w-full" style="pointer-events:auto;${cardShift}">
         <div data-mea="card" class="${CARD_BASE} ${CARD_IDLE}">
           <!-- Site photo / looping clip -->
           ${mediaHtml}
@@ -164,45 +197,59 @@ function createMarkerElement(site: BuildingInfo): {
             <div class="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-slate-700/60">
               <div class="flex items-center gap-1.5">
                 <span data-mea="headerDot" class="w-2 h-2 rounded-full bg-sky-400 mea-live-dot"></span>
-                <span data-mea="name" class="font-bold tracking-wide text-amber-300 font-['Prompt',sans-serif]" style="font-size:${MARKER_FONT_SIZES.title}px"></span>
+                <span data-mea="name" class="font-bold tracking-wide text-amber-300 font-['Prompt',sans-serif]" style="font-size:${s(MARKER_FONT_SIZES.title)}px"></span>
               </div>
-              <span data-mea="code" class="hidden font-mono text-sky-300 bg-sky-950/90 px-1.5 py-0.5 rounded border border-sky-600/40 font-bold" style="font-size:${MARKER_FONT_SIZES.code}px"></span>
+              <span data-mea="code" class="hidden font-mono text-sky-300 bg-sky-950/90 px-1.5 py-0.5 rounded border border-sky-600/40 font-bold" style="font-size:${s(MARKER_FONT_SIZES.code)}px"></span>
             </div>
 
             <!-- 3 Metrics Grid -->
             <div class="grid grid-cols-3 gap-1.5 text-center text-slate-200 py-1">
               <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
-                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังผลิต</div>
-                <div class="font-bold font-mono text-amber-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${s(MARKER_FONT_SIZES.metricLabel)}px">กำลังผลิต</div>
+                <div class="font-bold font-mono text-amber-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${s(MARKER_FONT_SIZES.metricValue)}px">
                   <span data-mea="power">0.0</span>
-                  <span class="text-amber-400/80 font-normal" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kW</span>
+                  <span class="text-amber-400/80 font-normal" style="font-size:${s(MARKER_FONT_SIZES.metricUnit)}px">kW</span>
                 </div>
               </div>
 
               <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
-                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">พลังงานรวม</div>
-                <div class="font-bold font-mono text-emerald-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${s(MARKER_FONT_SIZES.metricLabel)}px">พลังงานรวม</div>
+                <div class="font-bold font-mono text-emerald-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${s(MARKER_FONT_SIZES.metricValue)}px">
                   <span data-mea="energyVal">0</span>
-                  <span data-mea="energyUnit" class="text-emerald-400/80 font-normal" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWh</span>
+                  <span data-mea="energyUnit" class="text-emerald-400/80 font-normal" style="font-size:${s(MARKER_FONT_SIZES.metricUnit)}px">kWh</span>
                 </div>
               </div>
 
               <div class="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20 flex flex-col items-center justify-center">
-                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${MARKER_FONT_SIZES.metricLabel}px">กำลังติดตั้ง</div>
-                <div class="font-bold font-mono text-sky-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${MARKER_FONT_SIZES.metricValue}px">
+                <div class="text-slate-400 leading-none mb-1 font-medium" style="font-size:${s(MARKER_FONT_SIZES.metricLabel)}px">กำลังติดตั้ง</div>
+                <div class="font-bold font-mono text-sky-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${s(MARKER_FONT_SIZES.metricValue)}px">
                   <span data-mea="capacity">0</span>
-                  <span class="text-sky-400/80 font-normal" style="font-size:${MARKER_FONT_SIZES.metricUnit}px">kWp</span>
+                  <span class="text-sky-400/80 font-normal" style="font-size:${s(MARKER_FONT_SIZES.metricUnit)}px">kWp</span>
+                </div>
+              </div>
+
+              <!--
+                Real CO2 from SolarEdge, spanning the full row.
+                A fourth column would squeeze the three cells the 72" panel was
+                signed off on (see MARKER_CARD.widthPx) and clip their numbers,
+                so this takes its own row instead.
+              -->
+              <div class="col-span-3 bg-slate-900/90 py-1.5 px-2 rounded-lg border border-teal-500/25 flex items-center justify-center gap-2">
+                <div class="text-slate-400 leading-none font-medium" style="font-size:${s(MARKER_FONT_SIZES.metricLabel)}px">ลดการปล่อย CO₂</div>
+                <div class="font-bold font-mono text-teal-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${s(MARKER_FONT_SIZES.metricValue)}px">
+                  <span data-mea="co2Val">0.0</span>
+                  <span data-mea="co2Unit" class="text-teal-400/80 font-normal" style="font-size:${s(MARKER_FONT_SIZES.metricUnit)}px">kg</span>
                 </div>
               </div>
             </div>
 
             <!-- Action Link to Sub-page -->
-            <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-slate-300" style="font-size:${MARKER_FONT_SIZES.statusRow}px">
-              <span class="text-sky-300 flex items-center gap-1 font-mono" style="font-size:${MARKER_FONT_SIZES.statusText}px">
+            <div class="mt-1.5 pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-slate-300" style="font-size:${s(MARKER_FONT_SIZES.statusRow)}px">
+              <span class="text-sky-300 flex items-center gap-1 font-mono" style="font-size:${s(MARKER_FONT_SIZES.statusText)}px">
                 <span data-mea="statusDot" class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
-                <span data-mea="statusText">SolarEdge Ready</span>
+                <span data-mea="statusText">เชื่อมต่อระบบแล้ว</span>
               </span>
-              <span class="text-amber-300 font-bold flex items-center gap-0.5 hover:underline" style="font-size:${MARKER_FONT_SIZES.actionLink}px">
+              <span class="text-amber-300 font-bold flex items-center gap-0.5 hover:underline" style="font-size:${s(MARKER_FONT_SIZES.actionLink)}px">
                 ดูหน้าย่อยไซต์ ➔
               </span>
             </div>
@@ -213,7 +260,7 @@ function createMarkerElement(site: BuildingInfo): {
 
       <!-- 2. Google Earth Style 3D Blue Pin -->
       <div class="relative flex flex-col items-center cursor-pointer">
-        <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-sky-700 via-blue-500 to-cyan-300 border-2 border-white shadow-[0_0_15px_rgba(14,165,233,0.9)] flex items-center justify-center text-white font-bold font-mono" style="font-size:${MARKER_FONT_SIZES.pinNumber}px">
+        <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-sky-700 via-blue-500 to-cyan-300 border-2 border-white shadow-[0_0_15px_rgba(14,165,233,0.9)] flex items-center justify-center text-white font-bold font-mono" style="font-size:${s(MARKER_FONT_SIZES.pinNumber)}px">
           <span data-mea="pinId"></span>
         </div>
         <div class="w-1 h-4 bg-gradient-to-b from-blue-300 via-sky-500 to-sky-700 shadow-sm"></div>
@@ -255,6 +302,8 @@ function createMarkerElement(site: BuildingInfo): {
       energyValEl: pick('energyVal'),
       energyUnitEl: pick('energyUnit'),
       capacityEl: pick('capacity'),
+      co2ValEl: pick('co2Val'),
+      co2UnitEl: pick('co2Unit'),
       statusDot: pick('statusDot'),
       statusText: pick('statusText'),
       pinIdEl: pick('pinId'),
@@ -300,8 +349,15 @@ function patchMarker(
   if (handle.energyUnitEl.textContent !== lifetime.unit) handle.energyUnitEl.textContent = lifetime.unit;
 
   const nextCapacity =
-    metrics.capacityKwp === null ? NO_DATA : metrics.capacityKwp.toFixed(0);
+    metrics.capacityKwp === null
+      ? NO_DATA
+      : Math.round(metrics.capacityKwp).toLocaleString();
   if (handle.capacityEl.textContent !== nextCapacity) handle.capacityEl.textContent = nextCapacity;
+
+  const co2 =
+    metrics.co2Kg === null ? { value: NO_DATA, unit: '' } : formatCo2(metrics.co2Kg);
+  if (handle.co2ValEl.textContent !== co2.value) handle.co2ValEl.textContent = co2.value;
+  if (handle.co2UnitEl.textContent !== co2.unit) handle.co2UnitEl.textContent = co2.unit;
 
 
   // The no-data modifier has to be part of this string: the card's className is
@@ -320,7 +376,10 @@ function patchMarker(
   }`;
   if (handle.inner.className !== nextInner) handle.inner.className = nextInner;
 
-  const nextWrap = `mb-1 transition-opacity duration-300 ${
+  // w-full belongs in this string: the className is assigned wholesale just
+  // below, so a width class set only in the initial markup is wiped on the
+  // first patch and every card silently shrinks back to its own content.
+  const nextWrap = `mb-1 w-full transition-opacity duration-300 ${
     showCards ? 'opacity-100' : 'opacity-0 pointer-events-none'
   }`;
   if (handle.cardWrap.className !== nextWrap) handle.cardWrap.className = nextWrap;
@@ -340,7 +399,7 @@ function patchMarker(
 
   const nextStatusText =
     metrics.source === 'live'
-      ? 'SolarEdge Live'
+      ? 'เชื่อมต่อระบบแล้ว'
       : metrics.source === 'mock'
         ? 'Mock Simulator'
         : metrics.isBound
@@ -1064,14 +1123,13 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       </div>
 
       {/*
-        4. Bottom-Right: combined production across all 5 regional sites.
+        4. Top-Right: combined production across all 5 regional sites.
 
-        Anchored to the bottom edge rather than stacked under the camera
-        controls: the control column is ~150px tall and this panel ~275px, so
-        stacking them overflowed the map on anything shorter than a large
-        display. Bottom-right keeps both fully visible at any height.
+        Moved up from the bottom-right corner on request. The control drawer
+        also lives on this edge but centres itself vertically, so a panel
+        anchored to the top does not sit under it.
       */}
-      <div className="absolute bottom-3 right-3 z-20 pointer-events-auto">
+      <div className="absolute top-3 right-3 z-20 pointer-events-auto">
         <RegionalTotalsPanel totals={totals} />
       </div>
 

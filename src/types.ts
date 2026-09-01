@@ -77,6 +77,8 @@ export interface SolarEdgeRawOverview {
   lastDayData: SolarEdgeRawEnergyMetric;
   currentPower: SolarEdgeRawCurrentPower;
   measuredBy: string;
+  /** Cumulative CO2 avoided in kg, from /environmental-benefits. */
+  co2Kg?: number | null;
 }
 
 export interface SolarEdgeOverviewResponse {
@@ -105,6 +107,14 @@ export interface SolarEdgeTransformedOverview {
   rawTimestamp: string;
   isMockData: boolean;
   /**
+   * Cumulative CO2 avoided in KILOGRAMS, as reported by SolarEdge.
+   *
+   * null when the endpoint failed. Kept in kg rather than tonnes because
+   * that is the unit the SolarEdge portal shows, and the per-site card is
+   * read side by side with it.
+   */
+  co2Kg?: number | null;
+  /**
    * Today's measured power curve (quarter-hourly, kW), when the backend has it.
    *
    * Absent in mock mode and for a site with no readings. The detail page draws
@@ -118,18 +128,67 @@ export interface SolarEdgeTransformedOverview {
 export type BindingDisplayMetric = 
   | 'currentPower'   // กำลังผลิตปัจจุบัน (kW)
   | 'dailyEnergy'    // พลังงานผลิตวันนี้ (kWh)
-  | 'monthlyEnergy'  // พลังงานผลิตเดือนนี้ (kWh / MWh)
-  | 'lifetimeEnergy' // พลังงานสะสมทั้งหมด (MWh)
+  | 'monthlyEnergy'  // พลังงานผลิตเดือนนี้ (kWh)
+  | 'lifetimeEnergy' // พลังงานสะสมทั้งหมด (kWh)
   | 'efficiency';    // ประสิทธิภาพ
+
+/**
+ * How many SolarEdge site IDs one pin may aggregate.
+ *
+ * A campus can have its array split across several SolarEdge registrations, and
+ * the dashboard has to present that as one number per campus. Three is the cap
+ * the operators asked for.
+ */
+export const MAX_SITE_IDS_PER_BUILDING = 3;
 
 export interface BuildingSiteBinding {
   buildingId: number;
-  siteId: number | null; // null means using simulated mock
+  /**
+   * The v5 single-ID field.
+   *
+   * Kept so bindings saved by an earlier build still load. `siteIds` is the
+   * source of truth — read it through `bindingSiteIds()` rather than touching
+   * either field directly.
+   */
+  siteId?: number | null;
+  /**
+   * SolarEdge site IDs feeding this pin, 1..MAX_SITE_IDS_PER_BUILDING.
+   *
+   * Every figure on the pin is the SUM across these IDs. Empty means unbound,
+   * which renders as "ไม่มีข้อมูล" rather than as zero.
+   */
+  siteIds: number[];
   siteName?: string;
   primaryMetric: BindingDisplayMetric;
   customCapacityKwp?: number;
   isBound: boolean;
   boundAt?: string;
+}
+
+/**
+ * The IDs a binding actually points at, tolerating the v5 shape.
+ *
+ * Duplicates are dropped: the same site listed twice would be counted twice in
+ * every total, which is the one failure mode of summing that nobody would spot
+ * on a big screen.
+ */
+export function bindingSiteIds(binding: BuildingSiteBinding | undefined): number[] {
+  if (!binding || !binding.isBound) return [];
+  const raw =
+    binding.siteIds && binding.siteIds.length > 0
+      ? binding.siteIds
+      : binding.siteId != null
+        ? [binding.siteId]
+        : [];
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const id of raw) {
+    if (!Number.isFinite(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    if (out.length >= MAX_SITE_IDS_PER_BUILDING) break;
+  }
+  return out;
 }
 
 export interface BuildingInfo {
@@ -223,6 +282,15 @@ export interface SolarEdgeConfig {
    * the operator turns these on from the settings modal only while editing.
    */
   showSiteEditTools: boolean;
+  /**
+   * Extra SolarEdge site IDs the operator has registered by hand.
+   *
+   * The browser asks the backend for these on every poll, on top of whatever
+   * the pins are bound to. That is what makes a freshly typed ID show up in
+   * the account site list at all — until the backend has fetched it once,
+   * there is nothing to bind a pin to.
+   */
+  extraSiteIds?: number[];
 }
 
 export interface SolarEdgeSiteOverview {

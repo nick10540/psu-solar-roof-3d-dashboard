@@ -14,6 +14,7 @@
 import React, { useState } from 'react';
 import {
   SolarEdgeConfig,
+  MAX_SITE_IDS_PER_BUILDING,
   SolarEdgeRawSite,
   SolarEdgeTransformedOverview,
   SolarEdgeQuotaInfo,
@@ -39,6 +40,7 @@ import {
   Sparkles,
   Lock,
   PlugZap,
+  Plus,
   MapPinPlus
 } from 'lucide-react';
 
@@ -80,6 +82,35 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+  const [newSiteId, setNewSiteId] = useState('');
+  const [extraIdError, setExtraIdError] = useState<string | null>(null);
+
+  /**
+   * Register one hand-typed site ID.
+   *
+   * Rejects anything already covered — whether by another manual entry or
+   * by the backend's own configured set — because a duplicate would be
+   * fetched twice and, once bound, counted twice in a pin's total.
+   */
+  const addExtraSiteId = () => {
+    const n = Number(newSiteId.trim());
+    if (!Number.isInteger(n) || n <= 0) {
+      setExtraIdError('Site ID ต้องเป็นตัวเลขจำนวนเต็ม');
+      return;
+    }
+    const existing = formData.extraSiteIds ?? [];
+    if (existing.includes(n)) {
+      setExtraIdError(`#${n} อยู่ในรายการแล้ว`);
+      return;
+    }
+    if ((backendStatus?.siteIds ?? []).includes(n)) {
+      setExtraIdError(`#${n} ถูกตั้งไว้ที่ backend อยู่แล้ว ไม่ต้องเพิ่ม`);
+      return;
+    }
+    setFormData((prev) => ({ ...prev, extraSiteIds: [...existing, n] }));
+    setNewSiteId('');
+    setExtraIdError(null);
+  };
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -375,6 +406,87 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                   </div>
                 ) : null}
 
+                {/*
+                  Site IDs the operator registers by hand.
+
+                  The backend no longer owns this list. It ships a default set
+                  from env, but the browser sends whatever is here on every
+                  poll, so a new ID can be added without touching .dev.vars or
+                  restarting the worker. Saved with the rest of the config.
+                */}
+                <div className="pt-2 mt-1 border-t border-emerald-500/20 space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    <span className="text-[11px] font-bold text-slate-200">
+                      เพิ่ม Site ID เอง
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-snug">
+                    ใส่เลข Site ID จาก SolarEdge แล้วกด &ldquo;บันทึกการตั้งค่า&rdquo; ระบบจะดึงไซต์นั้นมาในรอบถัดไป
+                    แล้วจึงนำไปผูกกับหมุดได้ (หมุดหนึ่งรับได้ถึง {MAX_SITE_IDS_PER_BUILDING} ID)
+                  </p>
+
+                  {(formData.extraSiteIds ?? []).length > 0 && (
+                    <div className="space-y-1">
+                      {(formData.extraSiteIds ?? []).map((id) => (
+                        <div
+                          key={id}
+                          className="flex items-center justify-between gap-2 bg-slate-950/60 rounded-lg px-2 py-1.5 border border-sky-500/25"
+                        >
+                          <span className="text-[11px] font-mono text-sky-300">#{id}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFormData((prev) => ({
+                                ...prev,
+                                extraSiteIds: (prev.extraSiteIds ?? []).filter((v) => v !== id),
+                              }))
+                            }
+                            className="text-[10px] text-rose-300 hover:text-rose-200 hover:underline cursor-pointer shrink-0"
+                          >
+                            ลบ
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      id="input-extra-site-id"
+                      inputMode="numeric"
+                      value={newSiteId}
+                      onChange={(e) => setNewSiteId(e.target.value.replace(/[^0-9]/g, '').slice(0, 12))}
+                      onKeyDown={(e) => {
+                        // Enter must not submit the form: that would save and
+                        // close before the ID has been added to the list.
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          addExtraSiteId();
+                        }
+                      }}
+                      placeholder="เช่น 4956359"
+                      className="flex-1 bg-slate-900/90 border border-sky-500/30 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono focus:outline-none focus:border-sky-400 text-[11px] shadow-inner"
+                    />
+                    <button
+                      type="button"
+                      onClick={addExtraSiteId}
+                      disabled={!newSiteId.trim()}
+                      className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border shrink-0 ${
+                        newSiteId.trim()
+                          ? 'bg-sky-600/30 border-sky-400/50 text-sky-200 hover:bg-sky-600/50 cursor-pointer'
+                          : 'bg-slate-900/60 border-slate-800 text-slate-600 cursor-not-allowed'
+                      }`}
+                    >
+                      เพิ่ม
+                    </button>
+                  </div>
+
+                  {extraIdError && (
+                    <div className="text-[10px] text-amber-300">{extraIdError}</div>
+                  )}
+                </div>
+
 
                 {/* Per-site upstream failures. Two working pins and one silent
                     gap is exactly the state that needs naming out loud. */}
@@ -402,13 +514,6 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                   </div>
                 )}
               </div>
-
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                Fleet API Key เก็บอยู่ที่ <code className="text-sky-300 font-mono">worker/.dev.vars</code> ฝั่งเซิร์ฟเวอร์เท่านั้น
-                เบราว์เซอร์เรียกแค่ <code className="text-sky-300 font-mono">/api/solaredge/overview</code> แล้ว backend
-                แนบ <code className="text-sky-300 font-mono">X-API-Key</code> ให้เอง — ถ้าเชื่อมต่อไม่ได้
-                ให้ตรวจว่ารัน <code className="text-sky-300 font-mono">npm run worker</code> อยู่หรือไม่
-              </p>
             </div>
           )}
 
@@ -484,7 +589,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                         <div>
                           <span className="text-[9px] text-slate-500 block">เดือนนี้</span>
                           <span className="text-xs font-bold font-mono text-indigo-300">
-                            {ov.monthlyEnergyMwh} MWh
+                            {Math.round(ov.monthlyEnergyKwh).toLocaleString()} kWh
                           </span>
                         </div>
                       </div>
@@ -524,8 +629,8 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                         <span className="text-[10px] bg-slate-800 text-emerald-300 px-2 py-0.5 rounded font-mono">
                           {bind.primaryMetric === 'currentPower' && 'กำลังผลิต (kW)'}
                           {bind.primaryMetric === 'dailyEnergy' && 'วันนี้ (kWh)'}
-                          {bind.primaryMetric === 'monthlyEnergy' && 'เดือนนี้ (MWh)'}
-                          {bind.primaryMetric === 'lifetimeEnergy' && 'สะสม (MWh)'}
+                          {bind.primaryMetric === 'monthlyEnergy' && 'เดือนนี้ (kWh)'}
+                          {bind.primaryMetric === 'lifetimeEnergy' && 'สะสม (kWh)'}
                         </span>
                         <button
                           type="button"

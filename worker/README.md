@@ -78,17 +78,21 @@ than putting it in `wrangler.toml`.
 
 | Building | Site | Site ID | Capacity |
 | --- | --- | --- | --- |
+| 1 | สุราษฎร์ธานี | `4817295` | 650.88 kWp |
 | 3 | ตรัง | `4821237` | 999.36 kWp |
 | 4 | หาดใหญ่ | `4956359` | 1500 kWp |
 | 5 | ปัตตานี | `4947126` | 1522.08 kWp |
-| 1 | สุราษฎร์ธานี | *not provisioned* | — |
 | 2 | ภูเก็ต | *not provisioned* | — |
 
-Capacities come from the API. สุราษฎร์ธานี and ภูเก็ต have no site ID yet, so
-they stay unbound and render as "ไม่มีข้อมูล" in live mode rather than borrowing
-a neighbour's figures. When their IDs are issued, add them to `SITE_REGISTRY` in
-`src/config.ts`, to `SOLAREDGE_SITE_IDS`, and to the default bindings in
+Capacities come from the API. ภูเก็ต has no site ID yet, so it stays unbound and
+renders as "ไม่มีข้อมูล" in live mode rather than borrowing a neighbour's
+figures. When its ID is issued, add it to `SITE_REGISTRY` in `src/config.ts`, to
+`SOLAREDGE_SITE_IDS`, and to the default bindings in
 `src/services/solarEdgeService.ts`.
+
+สุราษฎร์ธานี reports `city: "Hat Yai", state: "Changwat Songkhla"` in its site
+metadata, unlike the other three whose cities match their names. Treat the
+building↔site mapping there as unverified until someone confirms it upstream.
 
 ## The v2 API, and the trap in it
 
