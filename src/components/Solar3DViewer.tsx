@@ -54,7 +54,7 @@ import {
   markerScaleFor,
   markerCardOffsetFor,
 } from '../config/markerTypography';
-import { resolveSiteMedia } from '../config/siteMedia';
+import { resolveSiteMediaPlaylist } from '../config/siteMedia';
 import {
   RotateCcw,
   Satellite,
@@ -107,7 +107,10 @@ interface MarkerHandle {
   statusDot: HTMLElement;
   statusText: HTMLElement;
   pinIdEl: HTMLElement;
-  /** The site's looping clip, when it has one. Governed by `useMediaPlayback`. */
+  /**
+   * The site's clip, when it has one - whichever is currently up for a site
+   * with a playlist. Play/pause is governed by the visibility effect below.
+   */
   videoEl: HTMLVideoElement | null;
   lng: number;
   lat: number;
@@ -165,6 +168,16 @@ function createMarkerElement(site: BuildingInfo): {
       ? ''
       : `transform:translate(${offset.dx}px,${offset.dy}px);`;
 
+  // The tail below the card is its pointer at the pin, and it sits inside the
+  // wrapper being nudged - so ปัตตานี's dx of 96 carried it 96px right of the
+  // pin it belongs to, leaving it aimed at open sea. Undoing the x nudge puts
+  // it back on the pin's axis while it stays butted to the card's bottom edge.
+  //
+  // dy is deliberately left alone: the tail has to stay against the card, and a
+  // lifted card's tail still points straight down its pin's axis - just from
+  // higher up. Cancelling dy too would strand the tail in the gap between them.
+  const tailShift = offset.dx === 0 ? '' : `transform:translateX(${-offset.dx}px);`;
+
   el.style.width = `${s(MARKER_CARD.widthPx)}px`;
   el.style.transform = 'translate(-50%, -100%)';
   el.id = `maplibre-marker-site-${site.id}`;
@@ -172,13 +185,18 @@ function createMarkerElement(site: BuildingInfo): {
   // Banner is omitted entirely when the site has no file, rather than left as
   // an empty box. Nothing here interpolates site-supplied text - names reach
   // the DOM through textContent in patchMarker - so this stays injection-safe.
-  const media = resolveSiteMedia(site.code);
-  const mediaHtml = media
+  //
+  // A site with several clips starts on the first and is stepped through the
+  // rest below; a single clip keeps the cheaper native `loop`.
+  const playlist = resolveSiteMediaPlaylist(site.code);
+  const first = playlist[0] ?? null;
+  const loopAttr = playlist.length > 1 ? '' : ' loop';
+  const mediaHtml = first
     ? `<div data-mea="mediaWrap" class="relative w-full bg-slate-900 overflow-hidden border-b border-sky-500/25" style="height:${s(MARKER_CARD.mediaHeightPx)}px">
          ${
-           media.kind === 'video'
-             ? `<video data-mea="mediaEl" class="w-full h-full object-cover" src="${media.url}" autoplay loop muted playsinline preload="metadata"></video>`
-             : `<img data-mea="mediaEl" class="w-full h-full object-cover" src="${media.url}" alt="" draggable="false" />`
+           first.kind === 'video'
+             ? `<video data-mea="mediaEl" class="w-full h-full object-cover" src="${first.url}" autoplay${loopAttr} muted playsinline preload="metadata"></video>`
+             : `<img data-mea="mediaEl" class="w-full h-full object-cover" src="${first.url}" alt="" draggable="false" />`
          }
          <!-- Keeps the header below readable against a bright frame. -->
          <div class="absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-slate-950/90 to-transparent pointer-events-none"></div>
@@ -256,7 +274,7 @@ function createMarkerElement(site: BuildingInfo): {
             </div>
           </div>
         </div>
-        <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-sky-400/80 mx-auto -mt-[1px]"></div>
+        <div data-mea="tail" class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-sky-400/80 mx-auto -mt-[1px]" style="${tailShift}"></div>
       </div>
 
       <!-- 2. Google Earth Style 3D Blue Pin -->
@@ -274,21 +292,52 @@ function createMarkerElement(site: BuildingInfo): {
     el.querySelector<HTMLElement>(`[data-mea="${key}"]`) as HTMLElement;
 
   const mediaEl = el.querySelector<HTMLElement>('[data-mea="mediaEl"]');
-  if (mediaEl) {
-    // A missing or undecodable file drops the whole banner rather than leaving
-    // a black rectangle above the numbers. `once` + a node that is discarded
-    // with the marker means there is nothing to unregister in the teardown.
-    mediaEl.addEventListener(
-      'error',
-      () => el.querySelector('[data-mea="mediaWrap"]')?.remove(),
-      { once: true }
-    );
-  }
-
   const videoEl = mediaEl instanceof HTMLVideoElement ? mediaEl : null;
   // Browsers only grant autoplay to muted video, and the `muted` attribute is
   // unreliable on a node parsed out of innerHTML - set the property as well.
   if (videoEl) videoEl.muted = true;
+
+  const dropBanner = () => el.querySelector('[data-mea="mediaWrap"]')?.remove();
+
+  if (videoEl && playlist.length > 1) {
+    // Each clip hands over to the next as it ends, and the last hands back to
+    // the first. Both listeners sit on a node that is discarded along with the
+    // marker, so there is nothing to unregister in the teardown.
+    let index = 0;
+    let failuresInARow = 0;
+
+    const advance = () => {
+      index = (index + 1) % playlist.length;
+      // Assigning `src` is the whole handover - it restarts the element's load
+      // algorithm on the new file. No `load()` call here: that queues a second
+      // run of the algorithm, which lands after this `play()` and pauses the
+      // element again, leaving the next clip loaded but frozen on frame one.
+      videoEl.src = playlist[index].url;
+      // The element spent its autoplay permission on the first clip, so every
+      // clip after it has to be started by hand. Rejected when the browser
+      // withholds playback; the governor below picks the clip up again once the
+      // cards are back on screen.
+      void videoEl.play().catch(() => {});
+    };
+
+    videoEl.addEventListener('ended', () => {
+      failuresInARow = 0;
+      advance();
+    });
+
+    // One undecodable file steps aside for the next instead of taking the whole
+    // banner down with it. The banner only goes when nothing in the list plays.
+    videoEl.addEventListener('error', () => {
+      failuresInARow += 1;
+      if (failuresInARow >= playlist.length) dropBanner();
+      else advance();
+    });
+  } else if (mediaEl) {
+    // A missing or undecodable file drops the whole banner rather than leaving
+    // a black rectangle above the numbers. `once` + a node that is discarded
+    // with the marker means there is nothing to unregister in the teardown.
+    mediaEl.addEventListener('error', dropBanner, { once: true });
+  }
 
   return {
     el,
@@ -1136,20 +1185,24 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       </div>
 
       {/*
-        4. Top-Right: combined production across all 5 regional sites.
+        4. Combined production across all 5 regional sites.
 
-        Moved up from the bottom-right corner on request. The control drawer
-        also lives on this edge but centres itself vertically, so a panel
-        anchored to the top does not sit under it.
+        It has been the bottom-right corner, then the top-right corner; it is
+        now a landscape band over the open water right of centre, which is the
+        one part of the frame no card or logo wants. Placement is measured, not
+        taste, at the reference framing (1904px viewport, default camera):
 
-        Vertical position is set by the ceremony masthead, not by taste. The
-        masthead is centred and runs ~1280px wide (two large partner logos
-        plus a 50-character Thai title on one line), so its right end reaches
-        this corner on anything narrower than ~1990px and the PSU crest lands
-        on this panel. Below that width the panel sits under the masthead
-        instead; above it, back in the corner.
+          masthead ends            y 74    -> the band can start at 219
+          หาดใหญ่ card starts      y 452   -> its 217px ends at 435, 17px clear
+          ปัตตานี card starts      x 1433  -> stay above it, not beside it
+          drawer handle            right edge, y 460-540 -> panel sits above
+
+        Inset from the right rather than pinned to it: the corner is where the
+        masthead's PSU crest lands on anything narrower than ~1990px, and the
+        band reads as sitting on the sea instead of clinging to the bezel.
+        Below 1600px there is no room for that inset, so it returns to the edge.
       */}
-      <div className="absolute right-3 top-[10.5rem] min-[1990px]:top-3 z-20 pointer-events-auto">
+      <div className="absolute right-3 min-[1600px]:right-[14rem] top-52 z-20 pointer-events-auto">
         <RegionalTotalsPanel totals={totals} />
       </div>
 

@@ -84,6 +84,18 @@ export function markerScaleFor(siteCode: string): number {
 }
 
 /**
+ * One of the sizes above at the featured (หาดใหญ่) card's scale, in px.
+ *
+ * For panels outside the map that are meant to read at the same size as the
+ * featured card - RegionalTotalsPanel does. Going through here rather than
+ * copying "26" across files means retuning `metricValue` or `featuredScale`
+ * moves both, instead of leaving the panel behind at the old size.
+ */
+export function featuredCardFontSizePx(key: keyof typeof MARKER_FONT_SIZES): number {
+  return MARKER_FONT_SIZES[key] * MARKER_CARD.featuredScale;
+}
+
+/**
  * Per-site nudges applied to the card, in px.
  *
  * The five pins sit close together at the default camera, and every card grows

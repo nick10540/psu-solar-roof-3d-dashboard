@@ -8,7 +8,7 @@
  * 5. ปัตตานี (Pattani) - 200 kWp
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from 'react';
 import { 
   BuildingInfo, 
   SolarEdgeTransformedOverview, 
@@ -17,7 +17,7 @@ import {
   TimeRange
 } from '../types';
 import { totalInstalledKwp } from '../data/mockSolarData';
-import { resolveSiteMedia } from '../config/siteMedia';
+import { resolveSiteMediaPlaylist } from '../config/siteMedia';
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
 import { CountUp } from './CountUp';
@@ -37,6 +37,8 @@ import {
   ChevronRight,
   TrendingUp,
   Leaf,
+  Trees,
+  Fuel,
   Calendar,
   Clock,
   Sparkles,
@@ -67,6 +69,52 @@ interface SiteDetailSubpageProps {
   onOpenDetailInspectionModal?: (site: BuildingInfo) => void;
 }
 
+/**
+ * Padding inside the production chart, in px. The chart is drawn at 1:1 with
+ * its box (see `chartBox`), so these are real pixels and `axis` has to hold a
+ * formatted tick label at `CHART_FONT_PX.axis` without clipping it.
+ */
+const CHART_PAD = { left: 56, right: 26, top: 26, bottom: 36 } as const;
+
+/**
+ * Text inside the chart, in px, at 1:1 with the screen.
+ *
+ * These are up from 10 and 10. The old values were not as small as they look:
+ * the letterboxed viewBox scaled them 1.31x on the way out, so 10 landed as
+ * ~13. Removing the letterbox freed real height for the curve, which then made
+ * a 13px axis the smallest type in a much bigger panel.
+ */
+const CHART_FONT_PX = { axis: 15, unit: 13 } as const;
+
+/** Roughly how much width one x-axis label needs before they start colliding. */
+const X_LABEL_PITCH_PX = 96;
+
+/**
+ * A round ceiling and step for an axis running 0..max.
+ *
+ * `Math.ceil(max * 1.15)` used to set the top, which labelled the gridlines
+ * 0 / 20 / 39 - three numbers nobody reads off a chart. Steps come from the
+ * 1-2-2.5-5 family times a power of ten, so the labels land on 0 / 10 / 20 /
+ * 30 / 40 instead, and the rounding up to a whole step supplies the headroom
+ * the old 1.15 was there for.
+ */
+function niceAxis(max: number, targetTicks = 4): { top: number; step: number } {
+  if (!(max > 0)) return { top: 10, step: 5 };
+  const rough = max / targetTicks;
+  const pow = Math.pow(10, Math.floor(Math.log10(rough)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * pow).find((s) => s >= rough) ?? 10 * pow;
+  return { top: Math.ceil(max / step) * step, step };
+}
+
+/** An axis tick as text: thousands as `k` so a year of kWh fits the gutter. */
+function formatAxisTick(v: number): string {
+  if (v >= 1000) {
+    const k = v / 1000;
+    return `${Number.isInteger(k) ? k : Number(k.toFixed(1))}k`;
+  }
+  return `${Number.isInteger(v) ? v : Number(v.toFixed(1))}`;
+}
+
 export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   site,
   allSites,
@@ -86,8 +134,31 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   const [selectedTimeRange, setSelectedTimeRange] = useState<TimeRange>('day');
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
 
-  /** Footage for this site, or null when no file has been supplied for it. */
-  const siteMedia = resolveSiteMedia(site.code);
+  /**
+   * Footage for this site in play order - empty when no file has been supplied.
+   * Most sites have one clip and let the element loop itself; a site with
+   * several runs through them in order and wraps back to the first.
+   */
+  const playlist = useMemo(() => resolveSiteMediaPlaylist(site.code), [site.code]);
+  const [clipIndex, setClipIndex] = useState(0);
+  const siteMedia = playlist[clipIndex] ?? playlist[0] ?? null;
+
+  /**
+   * Consecutive failed clips. A broken file steps aside for the next one, but
+   * without this counter an all-broken playlist would cycle on its own error
+   * events forever.
+   */
+  const failuresRef = useRef(0);
+
+  // Switching sites starts the new site's footage from its first clip.
+  useEffect(() => {
+    setClipIndex(0);
+    failuresRef.current = 0;
+  }, [site.code]);
+
+  const advanceClip = () => {
+    if (playlist.length > 1) setClipIndex((i) => (i + 1) % playlist.length);
+  };
 
   /**
    * Every figure on this page comes from the resolved metrics - the very same
@@ -252,13 +323,53 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   /** Is the range on screen drawn from measurements rather than simulation? */
   const isMeasuredRange = selectedTimeRange === 'day' && !!measuredCurve?.length;
 
-  // SVG Chart Calculations
-  const chartWidth = 700;
-  const chartHeight = 220;
-  const padLeft = 45;
-  const padRight = 20;
-  const padTop = 20;
-  const padBottom = 30;
+  // -------------------------------------------------------------------------
+  // Chart geometry
+  //
+  // The viewBox was a fixed 700x220 inside a `w-full h-72` box. On this page
+  // the box is ~1196x288, and a mismatched aspect ratio makes an SVG letterbox
+  // itself: the curve was drawn 916px wide and centred, leaving ~140px of dead
+  // margin down each side, with every font scaled 1.31x on the way. So the box
+  // is measured and the chart drawn at 1:1 against it - it fills the panel, and
+  // a px in CHART_FONT_PX is the px that lands on screen.
+  // -------------------------------------------------------------------------
+  const chartBoxRef = useRef<HTMLDivElement | null>(null);
+  const [chartBox, setChartBox] = useState({ w: 700, h: 260 });
+
+  useLayoutEffect(() => {
+    const el = chartBoxRef.current;
+    if (!el) return;
+
+    const measure = () =>
+      setChartBox((prev) => {
+        // Floors, not the raw reading: below these the axes overlap the curve,
+        // and a chart a few px wide would divide by zero in the path maths.
+        const w = Math.max(320, el.clientWidth);
+        const h = Math.max(180, el.clientHeight);
+        return prev.w === w && prev.h === h ? prev : { w, h };
+      });
+
+    // Measured once here as well as by the observer, and not just for speed.
+    // ResizeObserver callbacks are delivered as part of updating the rendering,
+    // which a backgrounded tab does not do - so a page that mounts this chart
+    // while hidden hears nothing, and the curve would sit at the placeholder
+    // size below. `clientWidth` answers whether the tab is rendering or not.
+    // (A `resize` listener is no help here: that event is dispatched from the
+    // same rendering steps, so it is deferred exactly as the observer is.)
+    measure();
+
+    // Later size changes come from here. A resize that happens while the tab is
+    // in the background arrives when it comes back - the observation is
+    // re-evaluated as soon as the page renders again, so the only stale window
+    // is one nobody is looking at.
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const chartWidth = chartBox.w;
+  const chartHeight = chartBox.h;
+  const { left: padLeft, right: padRight, top: padTop, bottom: padBottom } = CHART_PAD;
   const graphWidth = chartWidth - padLeft - padRight;
   const graphHeight = chartHeight - padTop - padBottom;
 
@@ -268,7 +379,22 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
     return Math.max(...values, 10);
   }, [currentDataset, selectedTimeRange]);
 
-  const maxY = Math.ceil(maxVal * 1.15);
+  /** Gridline values, bottom to top, and the axis ceiling the curve scales to. */
+  const { top: maxY, step: axisStep } = useMemo(() => niceAxis(maxVal), [maxVal]);
+  const axisTicks = useMemo(() => {
+    const ticks: number[] = [];
+    for (let v = 0; v <= maxY + axisStep / 2; v += axisStep) ticks.push(v);
+    return ticks;
+  }, [maxY, axisStep]);
+
+  /** kW for the daily power curve, kWh for the energy ranges. */
+  const chartUnit = selectedTimeRange === 'day' ? 'kW' : 'kWh';
+
+  /** Label every Nth point, so the x axis stays as full as it can read. */
+  const xLabelEvery = useMemo(() => {
+    const slots = Math.max(2, Math.floor(graphWidth / X_LABEL_PITCH_PX));
+    return Math.max(1, Math.ceil(currentDataset.length / slots));
+  }, [graphWidth, currentDataset.length]);
 
   const chartPaths = useMemo(() => {
     if (!currentDataset || currentDataset.length === 0) return { lineD: '', areaD: '', points: [] };
@@ -495,21 +621,27 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
               dashboard is in API mode precisely because someone wants measured
               figures. Blank is the honest answer. Mock mode is unaffected —
               there `hasData` is true and the simulation is the point. */}
+          {/* One measured box for both states: the chart takes the height the
+              panel has left over instead of a fixed h-72 that left ~300px of
+              dead panel below it, and the box does not resize when a site with
+              no data swaps the curve for the placeholder. */}
+          <div ref={chartBoxRef} className="w-full relative flex-1 min-h-[13rem]">
           {hasNoData ? (
-            <div className="w-full h-64 sm:h-72 flex flex-col items-center justify-center gap-2 text-center rounded-xl border border-slate-800 bg-slate-950/40">
-              <WifiOff className="w-8 h-8 text-slate-700" />
-              <div className="text-sm font-bold text-slate-400">{noDataHeadline(metrics)}</div>
-              <div className="text-4xl font-mono font-black text-slate-700 leading-none">{NO_DATA}</div>
-              <p className="text-[10px] text-slate-500 leading-snug max-w-[18rem]">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center rounded-xl border border-slate-800 bg-slate-950/40">
+              <WifiOff className="w-10 h-10 text-slate-700" />
+              <div className="text-base font-bold text-slate-400">{noDataHeadline(metrics)}</div>
+              <div className="text-5xl font-mono font-black text-slate-700 leading-none">{NO_DATA}</div>
+              <p className="text-xs text-slate-500 leading-snug max-w-[22rem]">
                 ผูกไซต์นี้กับ SolarEdge Site ID ด้วยปุ่มด้านล่าง จึงจะแสดงกราฟการผลิตจริง
               </p>
             </div>
           ) : (
-          /* SVG Area Chart */
-          <div className="w-full relative h-64 sm:h-72">
-            <svg 
-              viewBox={`0 0 ${chartWidth} ${chartHeight}`} 
-              className="w-full h-full overflow-visible"
+          /* SVG Area Chart. Absolute so its own size never feeds back into the
+             box being measured. */
+          <>
+            <svg
+              viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+              className="absolute inset-0 w-full h-full overflow-visible"
             >
               <defs>
                 <linearGradient id="sitePowerGrad" x1="0" y1="0" x2="0" y2="1">
@@ -518,33 +650,45 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                 </linearGradient>
               </defs>
 
-              {/* Grid Lines */}
-              {[0, 0.5, 1].map((pct, idx) => {
-                const y = padTop + graphHeight * pct;
-                const val = Math.round(maxY * (1 - pct));
+              {/* Grid lines, one per round tick from niceAxis */}
+              {axisTicks.map((val) => {
+                const y = padTop + graphHeight * (1 - val / maxY);
+                const isBaseline = val === 0;
                 return (
-                  <g key={idx}>
+                  <g key={val}>
                     <line
                       x1={padLeft}
                       y1={y}
                       x2={chartWidth - padRight}
                       y2={y}
-                      stroke="rgba(255,255,255,0.08)"
-                      strokeDasharray="4 4"
+                      stroke={isBaseline ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)'}
+                      strokeDasharray={isBaseline ? undefined : '4 4'}
                     />
                     <text
-                      x={padLeft - 8}
-                      y={y + 4}
+                      x={padLeft - 10}
+                      y={y + CHART_FONT_PX.axis / 3}
                       fill="#94a3b8"
-                      fontSize="10"
+                      fontSize={CHART_FONT_PX.axis}
                       textAnchor="end"
                       fontFamily="monospace"
                     >
-                      {val}
+                      {formatAxisTick(val)}
                     </text>
                   </g>
                 );
               })}
+
+              {/* Which quantity the gutter is counting, said once */}
+              <text
+                x={padLeft - 10}
+                y={padTop - 10}
+                fill="#64748b"
+                fontSize={CHART_FONT_PX.unit}
+                textAnchor="end"
+                fontFamily="monospace"
+              >
+                {chartUnit}
+              </text>
 
               {/* Area & Line */}
               {chartPaths.areaD && (
@@ -561,19 +705,22 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                 />
               )}
 
-              {/* Data points & X Axis Labels */}
+              {/* Data points & X Axis Labels.
+                  Label density follows the measured width rather than a fixed
+                  six: at 1196px six timestamps across the day left the axis
+                  looking sampled, and on a narrow window six of them collided. */}
               {chartPaths.points.map((p, idx) => {
                 const isHovered = hoveredPointIndex === idx;
-                const showLabel = idx % Math.ceil(chartPaths.points.length / 6) === 0;
+                const showLabel = idx % xLabelEvery === 0;
 
                 return (
                   <g key={idx}>
                     {showLabel && (
                       <text
                         x={p.x}
-                        y={chartHeight - 8}
+                        y={chartHeight - 12}
                         fill="#94a3b8"
-                        fontSize="10"
+                        fontSize={CHART_FONT_PX.axis}
                         textAnchor="middle"
                         fontFamily="monospace"
                       >
@@ -585,7 +732,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                     <circle
                       cx={p.x}
                       cy={p.y}
-                      r={isHovered ? 6 : 3}
+                      r={isHovered ? 7 : 3.5}
                       fill={isHovered ? '#fbbf24' : '#f59e0b'}
                       stroke="#ffffff"
                       strokeWidth={isHovered ? 2 : 1}
@@ -601,45 +748,78 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             {/* Hover Tooltip Overlay */}
             {hoveredPointIndex !== null && chartPaths.points[hoveredPointIndex] && (
               <div
-                className="absolute pointer-events-none glass-panel px-3 py-1.5 rounded-xl text-xs border border-amber-400 shadow-xl bg-slate-950/95 -translate-x-1/2 -translate-y-full mb-2"
+                className="absolute pointer-events-none glass-panel px-3 py-2 rounded-xl border border-amber-400 shadow-xl bg-slate-950/95 -translate-x-1/2 -translate-y-full -mt-2"
                 style={{
                   left: `${(chartPaths.points[hoveredPointIndex].x / chartWidth) * 100}%`,
                   top: `${(chartPaths.points[hoveredPointIndex].y / chartHeight) * 100}%`,
                 }}
               >
-                <div className="font-mono text-[10px] text-slate-400">
+                <div className="font-mono text-xs text-slate-400">
                   {chartPaths.points[hoveredPointIndex].data.timeLabel}
                 </div>
-                <div className="font-bold text-amber-300 font-mono">
+                <div className="font-bold text-base text-amber-300 font-mono">
                   {selectedTimeRange === 'day'
                     ? `${chartPaths.points[hoveredPointIndex].data.powerKw} kW`
                     : `${chartPaths.points[hoveredPointIndex].data.energyKwh} kWh`}
                 </div>
               </div>
             )}
-          </div>
+          </>
           )}
+          </div>
 
-          {/* Environmental Yield for this site */}
-          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-xs">
-            <div className="bg-slate-900/60 p-2 rounded-xl border border-sky-500/10 text-center">
-              <div className="text-[10px] text-slate-400">ลดการปล่อย CO₂</div>
-              <div className={`font-bold font-mono mt-0.5 ${hasNoData ? 'text-slate-600' : 'text-emerald-300'}`}>
-                {co2TodayText}
+          {/* Environmental yield for this site, today.
+              Each cell carries its own icon: three identical grey boxes of
+              small type read as a footnote, and this row is the answer to "so
+              what" for everything above it. `shrink-0` on the row keeps the
+              chart, not these, absorbing the panel's spare height. */}
+          <div className="grid grid-cols-3 gap-2.5 pt-3 border-t border-slate-800 shrink-0">
+            {[
+              {
+                icon: <Leaf className="w-6 h-6" />,
+                label: 'ลดการปล่อย CO₂',
+                value: co2TodayText,
+                tone: 'text-emerald-300',
+                iconWrap: 'bg-emerald-950/60 border-emerald-500/25',
+              },
+              {
+                icon: <Trees className="w-6 h-6" />,
+                label: 'เทียบเท่าปลูกต้นไม้',
+                value: treesTodayText,
+                tone: 'text-amber-300',
+                iconWrap: 'bg-amber-950/60 border-amber-500/25',
+              },
+              {
+                icon: <Fuel className="w-6 h-6" />,
+                label: 'ประหยัดน้ำมันเชื้อเพลิง',
+                value: fuelTodayText,
+                tone: 'text-sky-300',
+                iconWrap: 'bg-sky-950/60 border-sky-500/25',
+              },
+            ].map((cell) => (
+              <div
+                key={cell.label}
+                className="bg-slate-900/60 px-3 py-2.5 rounded-xl border border-sky-500/10 flex items-center gap-3"
+              >
+                <div
+                  className={`shrink-0 w-11 h-11 rounded-xl border flex items-center justify-center ${
+                    hasNoData ? 'bg-slate-900/60 border-slate-700/50 text-slate-600' : `${cell.iconWrap} ${cell.tone}`
+                  }`}
+                >
+                  {cell.icon}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm text-slate-400 truncate">{cell.label}</div>
+                  <div
+                    className={`font-bold font-mono text-lg leading-tight ${
+                      hasNoData ? 'text-slate-600' : cell.tone
+                    }`}
+                  >
+                    {cell.value}
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="bg-slate-900/60 p-2 rounded-xl border border-sky-500/10 text-center">
-              <div className="text-[10px] text-slate-400">เทียบเท่าปลูกต้นไม้</div>
-              <div className={`font-bold font-mono mt-0.5 ${hasNoData ? 'text-slate-600' : 'text-amber-300'}`}>
-                {treesTodayText}
-              </div>
-            </div>
-            <div className="bg-slate-900/60 p-2 rounded-xl border border-sky-500/10 text-center">
-              <div className="text-[10px] text-slate-400">ประหยัดน้ำมันเชื้อเพลิง</div>
-              <div className={`font-bold font-mono mt-0.5 ${hasNoData ? 'text-slate-600' : 'text-sky-300'}`}>
-                {fuelTodayText}
-              </div>
-            </div>
+            ))}
           </div>
         </div>
 
@@ -667,16 +847,37 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             {siteMedia ? (
               siteMedia.kind === 'video' ? (
                 <video
-                  // Keyed by URL so switching sites swaps the source instead of
-                  // leaving the previous site's clip playing in the new panel.
-                  key={siteMedia.url}
+                  // Keyed by site rather than by URL: a playlist swaps its
+                  // source on the same element, so the panel does not flash
+                  // empty between clips, while a change of site still gets a
+                  // fresh element instead of the previous site's clip playing
+                  // on in the new panel.
+                  key={site.code}
                   src={siteMedia.url}
                   className="w-full h-full object-cover"
                   autoPlay
-                  loop
+                  // One clip loops itself; a playlist is stepped on by onEnded.
+                  loop={playlist.length <= 1}
                   muted
                   playsInline
                   preload="metadata"
+                  // `autoPlay` only covers the first clip: a media element
+                  // spends that permission once playback has begun, and the
+                  // `src` swap for the next clip leaves it paused. So each
+                  // newly-ready clip is started by hand.
+                  onCanPlay={(e) => {
+                    void e.currentTarget.play().catch(() => {});
+                  }}
+                  onEnded={() => {
+                    failuresRef.current = 0;
+                    advanceClip();
+                  }}
+                  // A file that will not decode hands over to the next one, up
+                  // until every clip in the list has failed in a row.
+                  onError={() => {
+                    failuresRef.current += 1;
+                    if (failuresRef.current < playlist.length) advanceClip();
+                  }}
                 />
               ) : (
                 <img
