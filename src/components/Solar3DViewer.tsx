@@ -53,8 +53,9 @@ import {
   MARKER_CARD,
   markerScaleFor,
   markerCardOffsetFor,
+  markerMediaHeightFor,
 } from '../config/markerTypography';
-import { resolveSiteMediaPlaylist } from '../config/siteMedia';
+import { resolveSiteMediaPlaylist, resolveSiteMediaSpeed } from '../config/siteMedia';
 import {
   RotateCcw,
   Satellite,
@@ -192,7 +193,7 @@ function createMarkerElement(site: BuildingInfo): {
   const first = playlist[0] ?? null;
   const loopAttr = playlist.length > 1 ? '' : ' loop';
   const mediaHtml = first
-    ? `<div data-mea="mediaWrap" class="relative w-full bg-slate-900 overflow-hidden border-b border-sky-500/25" style="height:${s(MARKER_CARD.mediaHeightPx)}px">
+    ? `<div data-mea="mediaWrap" class="relative w-full bg-slate-900 overflow-hidden border-b border-sky-500/25" style="height:${s(markerMediaHeightFor(site.code))}px">
          ${
            first.kind === 'video'
              ? `<video data-mea="mediaEl" class="w-full h-full object-cover" src="${first.url}" autoplay${loopAttr} muted playsinline preload="metadata"></video>`
@@ -296,6 +297,16 @@ function createMarkerElement(site: BuildingInfo): {
   // Browsers only grant autoplay to muted video, and the `muted` attribute is
   // unreliable on a node parsed out of innerHTML - set the property as well.
   if (videoEl) videoEl.muted = true;
+
+  // Per-site playback speed. `defaultPlaybackRate` is the one that carries:
+  // `advance` below hands over by assigning `src`, which reruns the load
+  // algorithm and resets `playbackRate` to it - set only `playbackRate` and
+  // clip one runs fast while the rest of the list drops back to 1x.
+  if (videoEl) {
+    const speed = resolveSiteMediaSpeed(site.code);
+    videoEl.defaultPlaybackRate = speed;
+    videoEl.playbackRate = speed;
+  }
 
   const dropBanner = () => el.querySelector('[data-mea="mediaWrap"]')?.remove();
 

@@ -17,7 +17,7 @@ import {
   TimeRange
 } from '../types';
 import { totalInstalledKwp } from '../data/mockSolarData';
-import { resolveSiteMediaPlaylist } from '../config/siteMedia';
+import { resolveSiteMediaPlaylist, resolveSiteMediaSpeed } from '../config/siteMedia';
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
 import { CountUp } from './CountUp';
@@ -142,6 +142,9 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   const playlist = useMemo(() => resolveSiteMediaPlaylist(site.code), [site.code]);
   const [clipIndex, setClipIndex] = useState(0);
   const siteMedia = playlist[clipIndex] ?? playlist[0] ?? null;
+
+  /** How fast this site's footage runs; 1 unless the site asks for more. */
+  const mediaSpeed = useMemo(() => resolveSiteMediaSpeed(site.code), [site.code]);
 
   /**
    * Consecutive failed clips. A broken file steps aside for the next one, but
@@ -865,8 +868,17 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                   // spends that permission once playback has begun, and the
                   // `src` swap for the next clip leaves it paused. So each
                   // newly-ready clip is started by hand.
+                  //
+                  // The site's speed is (re)applied here rather than once on
+                  // mount because that same `src` swap reruns the load
+                  // algorithm, which resets `playbackRate` to
+                  // `defaultPlaybackRate`. Setting both, before `play()`, means
+                  // every clip opens on its first frame already up to speed.
                   onCanPlay={(e) => {
-                    void e.currentTarget.play().catch(() => {});
+                    const el = e.currentTarget;
+                    el.defaultPlaybackRate = mediaSpeed;
+                    el.playbackRate = mediaSpeed;
+                    void el.play().catch(() => {});
                   }}
                   onEnded={() => {
                     failuresRef.current = 0;
