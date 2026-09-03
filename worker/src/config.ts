@@ -31,16 +31,28 @@ export interface WorkerEnv {
   SOLAREDGE_SITE_IDS?: string;
 
   /**
-   * Upstream requests allowed per rolling minute. Default 10, the plan's
-   * real ceiling. Lower it to leave room for another consumer of the key.
+   * Upstream requests allowed per rolling minute. Default 50, the upgraded
+   * package's ceiling. Lower it to leave room for another consumer of the key;
+   * raising it past what the account allows only moves the refusal upstream.
    */
   SOLAREDGE_MAX_CALLS_PER_MIN?: string;
 
   /**
-   * Upstream requests allowed per calendar month. Default 2000, the plan's
-   * real ceiling. Once spent, the backend serves cache instead of fetching.
+   * Upstream requests allowed per calendar month. Default 100000 — a spend
+   * ceiling this backend holds itself to, not a figure read off the plan. Once
+   * spent, the backend serves cache instead of fetching.
    */
   SOLAREDGE_MONTHLY_CALL_BUDGET?: string;
+
+  /**
+   * Default refresh cadence, in seconds, when the browser sends none.
+   *
+   * The dashboard normally sends its own per-site values, so these only cover
+   * a bare `GET /api/solaredge/overview` — a curl check, a health probe, or a
+   * kiosk whose localStorage has been wiped. Floored at MIN_REFRESH_INTERVAL_SEC.
+   */
+  SOLAREDGE_POWER_INTERVAL_SEC?: string;
+  SOLAREDGE_ENERGY_INTERVAL_SEC?: string;
 
   /** Comma-separated CORS origins. Empty/absent => same-origin only. */
   ALLOWED_ORIGINS?: string;
@@ -54,29 +66,91 @@ export const DEFAULT_API_BASE = 'https://monitoringapi.solaredge.com/v2';
 /**
  * Plan limits, and why they are enforced here rather than hoped for.
  *
- * The API charges 10 requests per MINUTE and 2000 per MONTH. A cold start
- * costs 4 requests per site (metadata + power + energy + cold totals), so
- * four sites need 16 — the per-minute ceiling is crossed by the fourth site
- * alone, and the last sites in the list come back as 429s. Sequential
- * fetching alone does not fix that; the burst has to actually wait.
+ * Two ceilings that fail differently.
  *
- * The monthly figure is the tighter constraint by far: 2000 a month is ~64
- * a day, while a 5-minute poll over four sites spends ~2300. The budget
- * guard below does not paper over that — it stops the overrun being silent.
+ * Per MINUTE (50 since the account was upgraded, up from the entry package's
+ * 10): a burst that crosses it returns 429 for whichever sites happen to sit
+ * last in the list, which reads on a 72" screen as "that campus is broken"
+ * rather than "we asked too fast". Sequential fetching alone does not fix
+ * that; the burst has to actually wait, which is what `reserveUpstreamSlot`
+ * does. At 50 the 30-second floor finally fits: four sites at 30 s on both
+ * knobs want 32/min, and even six sites stay under.
+ *
+ * Per MONTH: raised from the entry package's 2000 to 100000 at the operator's
+ * request, so the configurable 30-second refresh intervals below have room to
+ * run. Read both numbers as SPEND CEILINGS this backend holds itself to, not
+ * as claims about the account — if the real allowance is lower, SolarEdge
+ * answers 429 long before either guard fires.
+ *
+ * The MONTHLY figure is the binding constraint again: four sites at the 30 s
+ * floor spend ~46k/day, so 100000 lasts about two days. The settings panel
+ * puts that arithmetic on screen rather than leaving it to be discovered.
  */
-export const DEFAULT_MAX_CALLS_PER_MIN = 10;
-export const DEFAULT_MONTHLY_CALL_BUDGET = 2000;
+export const DEFAULT_MAX_CALLS_PER_MIN = 50;
+export const DEFAULT_MONTHLY_CALL_BUDGET = 100000;
 export const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// Refresh cadence
+//
+// The operator sets two intervals per site, in seconds. The BACKEND, not the
+// browser, decides when an upstream call actually happens: the dashboard ticks
+// at the fastest configured interval and asks for every site every time, and
+// the TTLs below decide which endpoints are due. That is what stops a second
+// tab, an F5, or a colleague's laptop from multiplying the spend.
+//
+// The split is "what is happening now" vs. "what has accumulated", because
+// those are the two pairs that cost 2 upstream calls each — and grouping them
+// this way makes the DEFAULT cadence byte-for-byte what the board did before
+// the knob existed (power+today every 5 min, totals every 30 min):
+//
+//   powerSec  -> /sites/{id}/power        + /sites/{id}/energy   (today)
+//   energySec -> /sites/{id}/energy?MONTH + /sites/{id}/environmental-benefits
+// ---------------------------------------------------------------------------
+
 /**
- * Serve a cached upstream response for this long.
+ * Floor for both intervals.
  *
- * Deliberately just under the dashboard's 5-minute poll, mirroring the client
- * cache. This is what actually protects the API budget: a second browser tab,
- * an F5 on the kiosk, or a colleague opening the dashboard on their laptop all
- * share ONE upstream fetch instead of each spending their own.
+ * Enforced here as well as in the settings UI: a hand-edited localStorage
+ * entry or a crafted query string must not be able to ask this backend to
+ * hammer SolarEdge every second.
  */
-export const OVERVIEW_CACHE_TTL_MS = 4.5 * 60 * 1000;
+export const MIN_REFRESH_INTERVAL_SEC = 30;
+
+/** A day. Anything slower is indistinguishable from "off" on a kiosk. */
+export const MAX_REFRESH_INTERVAL_SEC = 86400;
+
+/** Cadence when the client sends none — i.e. the pre-knob behaviour. */
+export const DEFAULT_POWER_INTERVAL_SEC = 300;
+export const DEFAULT_ENERGY_INTERVAL_SEC = 1800;
+
+export interface RefreshIntervals {
+  /** Seconds between /power and today's /energy for one site. */
+  powerSec: number;
+  /** Seconds between the month-series and environmental-benefits calls. */
+  energySec: number;
+}
+
+export const DEFAULT_REFRESH_INTERVALS: RefreshIntervals = {
+  powerSec: DEFAULT_POWER_INTERVAL_SEC,
+  energySec: DEFAULT_ENERGY_INTERVAL_SEC,
+};
+
+/** Clamp one interval into [MIN, MAX], falling back when unparseable. */
+export function clampIntervalSec(raw: unknown, fallback: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(MAX_REFRESH_INTERVAL_SEC, Math.max(MIN_REFRESH_INTERVAL_SEC, Math.floor(n)));
+}
+
+/**
+ * Last-good-payload retention.
+ *
+ * No longer a cadence control — the per-endpoint TTLs above are. This is only
+ * how long an assembled payload stays worth serving through an outage, and how
+ * long a duplicate request inside the same instant is collapsed into one.
+ */
+export const OVERVIEW_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface SiteDescriptor {
   siteId: number;
@@ -112,6 +186,21 @@ export interface ResolvedConfig {
   allowedOrigins: string[];
   maxCallsPerMin: number;
   monthlyCallBudget: number;
+  /** Cadence for any site with no explicit override. */
+  refreshIntervals: RefreshIntervals;
+  /**
+   * Per-site cadence, keyed by site ID.
+   *
+   * Sparse on purpose: a site the operator never touched is not listed, so
+   * moving the global default moves it too instead of leaving a stale copy
+   * behind. `intervalsForSite` does the lookup.
+   */
+  siteIntervals: Map<number, RefreshIntervals>;
+}
+
+/** The cadence in force for one site: its override, else the global default. */
+export function intervalsForSite(cfg: ResolvedConfig, siteId: number): RefreshIntervals {
+  return cfg.siteIntervals.get(siteId) ?? cfg.refreshIntervals;
 }
 
 export class ConfigError extends Error {}
@@ -172,7 +261,45 @@ export function resolveConfig(env: WorkerEnv): ResolvedConfig {
       env.SOLAREDGE_MONTHLY_CALL_BUDGET,
       DEFAULT_MONTHLY_CALL_BUDGET
     ),
+    refreshIntervals: {
+      powerSec: clampIntervalSec(env.SOLAREDGE_POWER_INTERVAL_SEC, DEFAULT_POWER_INTERVAL_SEC),
+      energySec: clampIntervalSec(env.SOLAREDGE_ENERGY_INTERVAL_SEC, DEFAULT_ENERGY_INTERVAL_SEC),
+    },
+    siteIntervals: new Map(),
   };
+}
+
+/**
+ * Overlay the cadence the browser asked for.
+ *
+ * Every value goes through `clampIntervalSec`, so no query string can get
+ * below the 30-second floor however it is spelled. An absent or unparseable
+ * field leaves the env-resolved default in place rather than snapping to the
+ * floor — an operator who set only the power interval keeps the energy default.
+ */
+export function withRefreshIntervals(
+  cfg: ResolvedConfig,
+  requested: {
+    powerSec?: unknown;
+    energySec?: unknown;
+    perSite?: Array<{ siteId: number; powerSec?: unknown; energySec?: unknown }>;
+  }
+): ResolvedConfig {
+  const refreshIntervals: RefreshIntervals = {
+    powerSec: clampIntervalSec(requested.powerSec, cfg.refreshIntervals.powerSec),
+    energySec: clampIntervalSec(requested.energySec, cfg.refreshIntervals.energySec),
+  };
+
+  const siteIntervals = new Map<number, RefreshIntervals>();
+  for (const entry of requested.perSite ?? []) {
+    if (!Number.isInteger(entry.siteId) || entry.siteId <= 0) continue;
+    siteIntervals.set(entry.siteId, {
+      powerSec: clampIntervalSec(entry.powerSec, refreshIntervals.powerSec),
+      energySec: clampIntervalSec(entry.energySec, refreshIntervals.energySec),
+    });
+  }
+
+  return { ...cfg, refreshIntervals, siteIntervals };
 }
 
 /**

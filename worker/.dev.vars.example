@@ -11,16 +11,35 @@ SOLAREDGE_SITE_IDS=4956359,4821237,4947126,4817295
 
 SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
 
-# Plan ceilings. The API allows 10 requests per MINUTE and 2000 per MONTH.
-# The backend waits rather than bursting past the per-minute figure, and
-# stops fetching (serving cache) once the monthly budget is spent.
+# Spend ceilings this backend holds itself to.
 #
-# NOTE: 2000/month is ~64/day. Four sites cost 2 requests each per refresh,
-# so a 5-minute poll spends roughly 2300/day — about 35x the budget. Raise
-# the poll interval or lower the site count before running this on a kiosk
-# full-time.
-SOLAREDGE_MAX_CALLS_PER_MIN=10
-SOLAREDGE_MONTHLY_CALL_BUDGET=2000
+# PER MINUTE: 50, matching the upgraded package (was 10 on the entry one). The
+# backend WAITS rather than bursting past it, so setting this above what the
+# account really allows does not buy throughput — it just moves the refusal
+# upstream, where it arrives as a 429 on whichever site happens to be last in
+# the list. At 50 the 30-second interval floor fits: four sites at 30 s on both
+# knobs want 32/min, six sites 48/min.
+SOLAREDGE_MAX_CALLS_PER_MIN=50
+
+# PER MONTH: 100000 so the configurable intervals have room to run. A guard
+# against silent overspend, NOT a claim about the plan — if the account's real
+# allowance is lower, SolarEdge starts refusing long before this fires. Set it
+# to the real allowance to have the guard (which serves cache instead of
+# failing) come first.
+#
+# With the per-minute ceiling at 50 this is the tighter limit again: four sites
+# at the 30 s floor spend ~46k/day, so 100000 lasts about two days. The
+# settings panel does that arithmetic live — calls/min, /day and /month for the
+# sites actually on screen — so check it there after changing an interval.
+SOLAREDGE_MONTHLY_CALL_BUDGET=100000
+
+# Default cadence, in seconds, for a request that carries none of its own
+# (a curl check, or a kiosk whose localStorage was wiped). The dashboard sends
+# its own per-site values and those win. Floor is 30 either way.
+#   POWER  -> /power + /energy (today)
+#   ENERGY -> /energy?MONTH + /environmental-benefits
+SOLAREDGE_POWER_INTERVAL_SEC=300
+SOLAREDGE_ENERGY_INTERVAL_SEC=1800
 
 # CORS allow-list. Leave empty for same-origin (behind the Vite/Nginx proxy).
 ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000

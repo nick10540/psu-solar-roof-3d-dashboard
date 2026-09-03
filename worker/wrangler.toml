@@ -10,3 +10,16 @@ compatibility_flags = ["nodejs_compat"]
 SOLAREDGE_API_BASE = "https://monitoringapi.solaredge.com/v2"
 SOLAREDGE_SITE_IDS = "4956359,4821237,4947126"
 ALLOWED_ORIGINS = "http://localhost:3000"
+
+# Spend ceilings. Per-minute matches the upgraded package (50, was 10) and the
+# backend waits rather than bursting past it — setting it higher than the
+# account allows only moves the refusal upstream. The monthly figure is a guard
+# against silent overspend, and at 50/min it is the tighter of the two: four
+# sites at the 30s interval floor spend ~46k/day.
+SOLAREDGE_MAX_CALLS_PER_MIN = "50"
+SOLAREDGE_MONTHLY_CALL_BUDGET = "100000"
+
+# Fallback cadence in seconds for a request that carries none. The dashboard
+# sends its own per-site values and those win. Floor is 30 either way.
+SOLAREDGE_POWER_INTERVAL_SEC = "300"
+SOLAREDGE_ENERGY_INTERVAL_SEC = "1800"

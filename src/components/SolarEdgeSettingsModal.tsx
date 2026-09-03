@@ -20,8 +20,10 @@ import {
   SolarEdgeQuotaInfo,
   SolarEdgeBackendStatus,
   BuildingSiteBinding,
-  BuildingInfo
+  BuildingInfo,
+  bindingSiteIds
 } from '../types';
+import { RefreshCadenceSettings } from './RefreshCadenceSettings';
 import {
   X,
   Key,
@@ -111,6 +113,25 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
     setNewSiteId('');
     setExtraIdError(null);
   };
+
+  /**
+   * The site IDs the dashboard actually polls: bound pins plus manual entries.
+   *
+   * Read off `formData`, not `config`, so adding an ID and setting its
+   * interval in the same visit shows the real cost before saving. Matches the
+   * union App.tsx sends to the backend — anything else would make the cost
+   * estimate below a different number from the one being spent.
+   */
+  const activeSiteIds = React.useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(Object.values(bindings) as BuildingSiteBinding[]).flatMap((b) => bindingSiteIds(b)),
+          ...(formData.extraSiteIds ?? []),
+        ])
+      ).sort((a, b) => a - b),
+    [bindings, formData.extraSiteIds]
+  );
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -516,6 +537,22 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
               </div>
             </div>
           )}
+
+          {/* 3b. Refresh cadence — the two intervals, per site, in seconds */}
+          <RefreshCadenceSettings
+            intervals={formData.refreshIntervals}
+            siteIntervals={formData.siteRefreshIntervals ?? {}}
+            activeSiteIds={activeSiteIds}
+            sites={sites}
+            limits={backendStatus?.limits ?? null}
+            onChange={({ intervals, siteIntervals }) =>
+              setFormData((prev) => ({
+                ...prev,
+                refreshIntervals: intervals,
+                siteRefreshIntervals: siteIntervals,
+              }))
+            }
+          />
 
           {/* 4. List of 5 Fetched SolarEdge Sites */}
           <div>
