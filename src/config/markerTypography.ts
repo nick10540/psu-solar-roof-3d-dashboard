@@ -84,6 +84,33 @@ export function markerScaleFor(siteCode: string): number {
 }
 
 /**
+ * Banner height for one site, overriding MARKER_CARD.mediaHeightPx.
+ *
+ * The banner is `object-cover`, so a box shaped differently from the footage
+ * crops the difference away rather than letterboxing it. At widthPx 320 a
+ * 120px banner is 2.67:1 while the clips are 16:9, which was cutting a third
+ * off the top and bottom of every frame.
+ *
+ * 180 is exactly 16:9 of 320, so หาดใหญ่'s clips fill the banner with nothing
+ * trimmed and no bars. It does cost card height, and mediaHeightPx's note
+ * applies - those px overlap the site to the north.
+ */
+const MEDIA_HEIGHT_OVERRIDE_PX: Record<string, number> = {
+  'MEA-HDY-04': 180, // 16:9 of widthPx, so the footage is shown whole
+};
+
+/**
+ * A site's banner height before the featured scale, in px.
+ *
+ * Goes through here rather than reading mediaHeightPx directly so a site whose
+ * footage is shaped differently from the default banner can be given a box
+ * that matches it, instead of every site sharing one crop.
+ */
+export function markerMediaHeightFor(siteCode: string): number {
+  return MEDIA_HEIGHT_OVERRIDE_PX[siteCode] ?? MARKER_CARD.mediaHeightPx;
+}
+
+/**
  * One of the sizes above at the featured (หาดใหญ่) card's scale, in px.
  *
  * For panels outside the map that are meant to read at the same size as the
@@ -103,19 +130,24 @@ export function featuredCardFontSizePx(key: keyof typeof MARKER_FONT_SIZES): num
  * collide. Measured at the default framing on a 1904px viewport:
  *
  *   หาดใหญ่ × ปัตตานี   85px wide, full height  -> ปัตตานี moves right
- *   สุราษฎร์ × ตรัง      141 x 42px              -> สุราษฎร์ moves up
- *   สุราษฎร์ × ภูเก็ต     44 x 26px               -> same nudge clears both
+ *   สุราษฎร์ × ตรัง      141 x 42px              -> accepted, see below
+ *   สุราษฎร์ × ภูเก็ต     44 x 26px               -> accepted, see below
  *
  * หาดใหญ่ is deliberately NOT moved: it is the featured card and sits only 3px
  * clear of ตรัง on its left, so shifting it left would trade one collision for
  * a worse one.
+ *
+ * สุราษฎร์ is deliberately NOT moved either, and that one is a reversal: it
+ * carried dy -52 to clear the two collisions above. The operators asked for its
+ * card to sit against its own pin the way every other card does, preferring the
+ * overlap to a card floating clear of the pin it labels. Putting the lift back
+ * is a one-line change if that call is ever reversed.
  *
  * These are tuned to the DEFAULT camera. Pan or zoom far from it and cards can
  * meet again — the alternative was shrinking the cards until nothing collided,
  * which costs the legibility the 72" panel was sized for.
  */
 export const MARKER_CARD_OFFSETS: Record<string, { dx: number; dy: number }> = {
-  'MEA-SRT-01': { dx: 0, dy: -52 }, // สุราษฎร์ธานี — lift clear of ตรัง and ภูเก็ต
   'MEA-PTN-05': { dx: 96, dy: 0 }, // ปัตตานี — step right of หาดใหญ่
 };
 

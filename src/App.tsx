@@ -61,7 +61,9 @@ import {
   MOCK_SOLAREDGE_SITES,
   fetchBackendHealth,
   loadSolarEdgeConfig,
-  saveSolarEdgeConfig
+  saveSolarEdgeConfig,
+  fastestIntervalSec,
+  readCachedSnapshot
 } from './services/solarEdgeService';
 import {
   saveBuildingCoords,
@@ -101,8 +103,19 @@ import { AddBuildingModal } from './components/AddBuildingModal';
 import { DeleteBuildingDialog } from './components/DeleteBuildingDialog';
 import { Watermark } from './components/Watermark';
 
-/** SolarEdge auto-poll cadence. One bulk API call per tick. */
-const SOLAREDGE_POLL_MS = 5 * 60 * 1000;
+/**
+ * How the auto-poll cadence is decided.
+ *
+ * The timer ticks at the FASTEST interval any site is configured for and asks
+ * the backend for every site each time. The backend then decides, per site and
+ * per endpoint, which of those are actually due — so a board with หาดใหญ่ on
+ * 30 s and the rest on 5 minutes ticks every 30 s and only spends หาดใหญ่'s
+ * calls in between. Putting that decision in one place, server-side, is also
+ * what keeps a second tab from doubling the spend.
+ */
+function pollIntervalMsFor(config: SolarEdgeConfig): number {
+  return fastestIntervalSec(config) * 1000;
+}
 
 interface LoadOptions {
   forceRefresh?: boolean;
@@ -185,6 +198,29 @@ export default function App() {
    * restart the 5-minute interval, and a burst of edits would each trigger
    * their own upstream round.
    */
+  /**
+   * Whether a page load has yet landed one FORCED round.
+   *
+   * A page load — an F5, the kiosk's unattended reload, someone opening the
+   * dashboard fresh — must not wait for the poll timer and must not be served
+   * a cached round. It gets a forced call immediately.
+   *
+   * Latched on SUCCESS, not on dispatch. Latching before the request meant the
+   * very next run of this effect fell through to a non-forced call, aborted the
+   * forced one still in the air, and replaced it with a cacheable request —
+   * React StrictMode's mount/unmount/remount does exactly that in dev, and a
+   * config change landing in the same second does it in production, so the
+   * reload quietly stopped being forced at all. Left pending until a forced
+   * round commits, every such re-run forces too.
+   */
+  const bootForcedRef = useRef<boolean>(false);
+
+  /** Whether the one-shot localStorage paint below has already run. */
+  const bootPaintedRef = useRef<boolean>(false);
+
+  /** Whether that paint actually put figures on screen (vs. nothing cached). */
+  const bootSnapshotShownRef = useRef<boolean>(false);
+
   const bindingsRef = useRef(bindings);
   /** Latest config, mirrored for the same reason as bindingsRef. */
   const configRef = useRef(config);
@@ -252,6 +288,8 @@ export default function App() {
           siteIds: boundIds,
           forceRefresh,
           useMock: config.useMock,
+          refreshIntervals: configRef.current.refreshIntervals,
+          siteRefreshIntervals: configRef.current.siteRefreshIntervals,
           signal: controller.signal,
         });
 
@@ -320,13 +358,26 @@ export default function App() {
           setQuotaInfo(res.quota);
           // Null in mock mode and on a cache hit — keep the last known backend
           // state rather than blanking the settings panel on every cached tick.
-          if (res.backend) setBackendStatus(res.backend);
+          // Merged, not replaced: a data poll reports per-site errors but has
+          // no reason to ask /health for the plan ceilings, so it carries
+          // `limits: null`. Overwriting with that would blank the cost
+          // estimate in the settings panel on the next tick.
+          if (res.backend) {
+            setBackendStatus((prev) => ({
+              ...res.backend!,
+              limits: res.backend!.limits ?? prev?.limits ?? null,
+            }));
+          }
           setSolarEdgeError(res.error ?? null);
           if (aggregated) setOverview((prev) => ({ ...prev, ...aggregated }));
         };
 
         if (silent) startTransition(commit);
         else commit();
+
+        // The page load has had its uncached round; later effect runs can go
+        // back to normal cache behaviour. See bootForcedRef.
+        if (forceRefresh) bootForcedRef.current = true;
 
         lastSyncAtRef.current = Date.now();
       } catch (err) {
@@ -354,9 +405,38 @@ export default function App() {
   const pendingForceRefreshRef = useRef<boolean>(false);
 
   useEffect(() => {
-    const force = pendingForceRefreshRef.current;
+    const force = pendingForceRefreshRef.current || !bootForcedRef.current;
     pendingForceRefreshRef.current = false;
-    loadSolarEdgeData({ forceRefresh: force, takeover: true });
+
+    if (!bootPaintedRef.current) {
+      bootPaintedRef.current = true;
+
+      // Paint the last known figures first, straight out of localStorage.
+      // The forced call below is a network round trip; without this the board
+      // sits on mock defaults until it lands, which on a 72" screen reads as
+      // the dashboard being broken. Anything shown here is replaced within a
+      // second or two, and only ever by real data.
+      if (!config.useMock) {
+        const snapshot = readCachedSnapshot();
+        if (snapshot) {
+          setSolarEdgeSites(snapshot.sites);
+          setSolarEdgeOverviews(snapshot.overviews);
+          bootSnapshotShownRef.current = true;
+        }
+      }
+    }
+
+    // Silent once the cache has put numbers on screen: a spinner over real
+    // figures would undo the paint above. With nothing cached — a genuinely
+    // first visit — the load state is the honest thing to show.
+    loadSolarEdgeData({
+      forceRefresh: force,
+      takeover: true,
+      silent: bootSnapshotShownRef.current,
+    });
+    // config.useMock is read for the boot paint only; loadSolarEdgeData
+    // already re-runs this effect when it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSolarEdgeData]);
 
   /**
@@ -374,6 +454,8 @@ export default function App() {
   // ---------------------------------------------------------------------------
   // 2. Auto-polling every 5 minutes (background, no UI disruption)
   // ---------------------------------------------------------------------------
+  const pollMs = pollIntervalMsFor(config);
+
   useEffect(() => {
     const tick = () => {
       // A blanked or backgrounded screen has nobody watching — don't spend
@@ -382,11 +464,11 @@ export default function App() {
       loadSolarEdgeData({ silent: true });
     };
 
-    const intervalId = window.setInterval(tick, SOLAREDGE_POLL_MS);
+    const intervalId = window.setInterval(tick, pollMs);
 
     const handleVisibility = () => {
       if (document.hidden) return;
-      if (Date.now() - lastSyncAtRef.current >= SOLAREDGE_POLL_MS) tick();
+      if (Date.now() - lastSyncAtRef.current >= pollMs) tick();
     };
     document.addEventListener('visibilitychange', handleVisibility);
 
@@ -394,7 +476,7 @@ export default function App() {
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [loadSolarEdgeData]);
+  }, [loadSolarEdgeData, pollMs]);
 
   // ---------------------------------------------------------------------------
   // 3. Long-running safety net — reloads only while the screen sits idle

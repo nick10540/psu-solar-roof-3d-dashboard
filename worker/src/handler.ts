@@ -7,13 +7,29 @@
  * the same backend.
  *
  * Routes
- *   GET /api/solaredge/overview[?refresh=1]  sites + overviews for the dashboard
- *   GET /api/solaredge/health                liveness and configuration
+ *   GET /api/solaredge/overview   sites + overviews for the dashboard
+ *   GET /api/solaredge/health     liveness and configuration
+ *
+ * Query parameters on /overview
+ *   refresh=1              bypass the live pair's TTL (a page load wanting
+ *                          numbers now). Leaves the slow totals cached.
+ *   sites=<id>,<id>        the site IDs the dashboard actually has on screen
+ *   powerSec=<n>           default seconds between /power + today's /energy
+ *   energySec=<n>          default seconds between the totals + CO2 calls
+ *   siteIntervals=         per-site overrides, "<id>:<powerSec>:<energySec>"
+ *     4956359:30:600,...   repeated comma-separated. Either number may be
+ *                          blank to inherit the default above.
+ *
+ * Every interval is clamped server-side to [MIN, MAX]_REFRESH_INTERVAL_SEC —
+ * these are hints from the browser, not instructions.
  */
 
 import {
   ConfigError,
+  MAX_REFRESH_INTERVAL_SEC,
+  MIN_REFRESH_INTERVAL_SEC,
   resolveConfig,
+  withRefreshIntervals,
   withRequestedSites,
   WorkerEnv,
 } from './config.js';
@@ -52,6 +68,40 @@ function json(body: unknown, status: number, extraHeaders: Record<string, string
       ...extraHeaders,
     },
   });
+}
+
+/**
+ * Parse `siteIntervals=<id>:<powerSec>:<energySec>,...`.
+ *
+ * A malformed entry is skipped rather than failing the whole request: the
+ * fallback is the global cadence, which is a working board. Blank numbers mean
+ * "inherit", so `4956359:30:` sets only the live interval for that site, and
+ * `clampIntervalSec` in config.ts is what enforces the floor on whatever
+ * survives this.
+ */
+function parseSiteIntervals(
+  raw: string
+): Array<{ siteId: number; powerSec?: number; energySec?: number }> {
+  const out: Array<{ siteId: number; powerSec?: number; energySec?: number }> = [];
+  if (!raw) return out;
+
+  for (const chunk of raw.split(',')) {
+    const [idPart, powerPart, energyPart] = chunk.split(':');
+    const siteId = Number((idPart || '').trim());
+    if (!Number.isInteger(siteId) || siteId <= 0) continue;
+
+    const asSec = (part: string | undefined): number | undefined => {
+      const n = Number((part || '').trim());
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    };
+
+    out.push({ siteId, powerSec: asSec(powerPart), energySec: asSec(energyPart) });
+    // Same hard cap as withRequestedSites: a crafted query string must not be
+    // able to make this backend fan out across hundreds of sites.
+    if (out.length >= 24) break;
+  }
+
+  return out;
 }
 
 export async function handleRequest(request: Request, env: WorkerEnv): Promise<Response> {
@@ -97,6 +147,13 @@ export async function handleRequest(request: Request, env: WorkerEnv): Promise<R
         // checked against the plan without reading the source.
         maxCallsPerMin: cfg.maxCallsPerMin,
         monthlyCallBudget: cfg.monthlyCallBudget,
+        // The cadence a bare request would get, plus the bounds the backend
+        // clamps to, so the settings panel can show the real numbers instead
+        // of assuming its own defaults took effect.
+        defaultPowerIntervalSec: cfg.refreshIntervals.powerSec,
+        defaultEnergyIntervalSec: cfg.refreshIntervals.energySec,
+        minRefreshIntervalSec: MIN_REFRESH_INTERVAL_SEC,
+        maxRefreshIntervalSec: MAX_REFRESH_INTERVAL_SEC,
       },
       200,
       cors
@@ -113,7 +170,15 @@ export async function handleRequest(request: Request, env: WorkerEnv): Promise<R
       .split(',')
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isInteger(n) && n > 0);
-    const effective = requested.length > 0 ? withRequestedSites(cfg, requested) : cfg;
+    const scoped = requested.length > 0 ? withRequestedSites(cfg, requested) : cfg;
+
+    // The browser owns the cadence, this backend owns the floor. Absent
+    // parameters leave the env-resolved default in place.
+    const effective = withRefreshIntervals(scoped, {
+      powerSec: url.searchParams.get('powerSec') ?? undefined,
+      energySec: url.searchParams.get('energySec') ?? undefined,
+      perSite: parseSiteIntervals(url.searchParams.get('siteIntervals') || ''),
+    });
 
     // fetchAllOverviews reports every failure per site rather than throwing:
     // one site hitting a rate limit must not blank out the ones that worked.

@@ -7,7 +7,14 @@
  * 5. ปัตตานี (Pattani) - 200 kWp
  */
 
-import { BuildingInfo, CampusWeather, SolarEdgeConfig, SolarEdgeSiteOverview, TimeSeriesDataPoint } from '../types';
+import {
+  BuildingInfo,
+  CampusWeather,
+  DEFAULT_REFRESH_INTERVALS,
+  SolarEdgeConfig,
+  SolarEdgeSiteOverview,
+  TimeSeriesDataPoint,
+} from '../types';
 
 export const INITIAL_WEATHER: CampusWeather = {
   temperatureC: 32,
@@ -47,6 +54,11 @@ export const INITIAL_SOLAREDGE_CONFIG: SolarEdgeConfig = {
   pollIntervalSec: 15,
   showSiteEditTools: false,
   extraSiteIds: [],
+  // The pre-knob cadence: power + today's energy every 5 min, the
+  // accumulating totals every 30. Upgrading changes nothing about what the
+  // board spends until an operator deliberately moves it in the settings panel.
+  refreshIntervals: { ...DEFAULT_REFRESH_INTERVALS },
+  siteRefreshIntervals: {},
 };
 
 export const SITE_OVERVIEW_DEFAULT: SolarEdgeSiteOverview = {

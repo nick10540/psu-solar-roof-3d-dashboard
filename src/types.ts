@@ -267,6 +267,73 @@ export interface SolarEdgeBackendStatus {
   /** Set when the backend served its last good data through an outage. */
   staleReason: string | null;
   message: string | null;
+  /**
+   * The ceilings and cadence the BACKEND actually applied, from /health.
+   *
+   * Shown in the settings panel so the operator reads the real numbers rather
+   * than the browser's assumption of them: the backend clamps every interval
+   * it is sent, and its per-minute ceiling is what a fast cadence runs into
+   * first. Null until /health has answered, and in mock mode.
+   */
+  limits: SolarEdgeBackendLimits | null;
+}
+
+export interface SolarEdgeBackendLimits {
+  maxCallsPerMin: number;
+  monthlyCallBudget: number;
+  minRefreshIntervalSec: number;
+  maxRefreshIntervalSec: number;
+  defaultPowerIntervalSec: number;
+  defaultEnergyIntervalSec: number;
+}
+
+/**
+ * Floor for a refresh interval, in seconds.
+ *
+ * 30 s is the operator-facing minimum. It is enforced again in worker/src/
+ * config.ts, because the browser's copy of this number is only a suggestion
+ * once localStorage is hand-editable.
+ */
+export const MIN_REFRESH_INTERVAL_SEC = 30;
+
+/** A day. Slower than this is indistinguishable from "off" on a kiosk. */
+export const MAX_REFRESH_INTERVAL_SEC = 86400;
+
+/**
+ * How often one site's figures are refetched, in seconds.
+ *
+ * Two knobs rather than one per endpoint, because the upstream calls come in
+ * two natural pairs and the split is what lets the live figures run fast
+ * without dragging the expensive history along:
+ *
+ *   powerSec  -> /power + /energy (today)      "what is happening now"
+ *   energySec -> /energy?MONTH + CO2           "what has accumulated"
+ *
+ * Each pair costs 2 upstream calls per site per tick. The settings panel does
+ * that arithmetic on screen against the ceilings the backend reports, because
+ * the 30 s floor is affordable per minute (four sites = 32/min against 50) and
+ * ruinous per month (~46k/day against a 100k budget) — two limits that a
+ * number in seconds gives no hint of.
+ */
+export interface SiteRefreshIntervals {
+  /** Real-time power + today's energy. */
+  powerSec: number;
+  /** Month / year / lifetime energy + CO2. */
+  energySec: number;
+}
+
+export const DEFAULT_REFRESH_INTERVALS: SiteRefreshIntervals = {
+  // The pre-knob cadence, kept as the default so upgrading changes nothing
+  // about what the board spends until someone deliberately moves it.
+  powerSec: 300,
+  energySec: 1800,
+};
+
+/** Clamp one interval into [MIN, MAX], falling back when unparseable. */
+export function clampRefreshIntervalSec(raw: unknown, fallback: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(MAX_REFRESH_INTERVAL_SEC, Math.max(MIN_REFRESH_INTERVAL_SEC, Math.round(n)));
 }
 
 export interface SolarEdgeConfig {
@@ -276,6 +343,16 @@ export interface SolarEdgeConfig {
   lastSyncTime: string;
   pollIntervalSec: number;
   autoSyncMinutes?: number;
+  /** Cadence applied to every site that has no explicit override. */
+  refreshIntervals: SiteRefreshIntervals;
+  /**
+   * Per-site cadence, keyed by site ID as a string (JSON object keys).
+   *
+   * Sparse on purpose: a site the operator never touched is absent, so moving
+   * the global default moves it too instead of leaving a stale copy behind.
+   * `resolveSiteIntervals` in solarEdgeService.ts does the lookup.
+   */
+  siteRefreshIntervals?: Record<string, SiteRefreshIntervals>;
   /**
    * Show the "เพิ่มไซต์ / ลบไซต์" tools on the map. Off by default: on an
    * unattended ceremony screen a stray tap on "ลบไซต์" removes a site pin, and

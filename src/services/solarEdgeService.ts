@@ -35,7 +35,12 @@ import {
   SolarEdgeSiteStatus,
   BuildingSiteBinding,
   bindingSiteIds,
-  SolarEdgeConfig
+  SolarEdgeConfig,
+  SolarEdgeBackendLimits,
+  SiteRefreshIntervals,
+  DEFAULT_REFRESH_INTERVALS,
+  clampRefreshIntervalSec,
+  MIN_REFRESH_INTERVAL_SEC
 } from '../types';
 import { INITIAL_SOLAREDGE_CONFIG } from '../data/mockSolarData';
 
@@ -49,14 +54,49 @@ const BACKEND_BASE_URL = '/api/solaredge';
 const DAILY_QUOTA_LIMIT = 300; // SolarEdge daily request limit policy
 
 /**
- * Cache TTL, deliberately just under the 5-minute dashboard poll.
+ * How long the browser reuses its own last payload.
  *
- * The poller runs on a 5-minute tick and asks for data WITHOUT forceRefresh.
- * A 4.5-minute TTL means each tick reliably finds the cache expired and takes
- * exactly one fetch, while an accidental double-render, a manual refresh or a
- * page reload inside the same window is served from cache for free.
+ * Follows the FASTEST configured interval instead of a fixed 4.5 minutes: now
+ * that cadence is an operator setting, a hard-coded TTL would silently cap a
+ * 30-second board at one refresh every 4.5 minutes and the knob would look
+ * broken. Shaved slightly so a tick reliably finds the cache expired rather
+ * than landing on the exact boundary.
+ *
+ * Protecting the upstream budget is no longer this cache's job — the backend's
+ * per-endpoint TTLs own that, and they are shared across every tab. All this
+ * has to do is stop a double render or a rapid remount re-requesting.
  */
-const CACHE_TTL_MS = 4.5 * 60 * 1000;
+let clientCacheTtlMs = DEFAULT_REFRESH_INTERVALS.powerSec * 1000 * 0.9;
+
+/** The shortest interval any site is configured for, in seconds. */
+export function fastestIntervalSec(config: SolarEdgeConfig): number {
+  const candidates: number[] = [
+    config.refreshIntervals?.powerSec ?? DEFAULT_REFRESH_INTERVALS.powerSec,
+    config.refreshIntervals?.energySec ?? DEFAULT_REFRESH_INTERVALS.energySec,
+  ];
+
+  for (const entry of Object.values(config.siteRefreshIntervals ?? {})) {
+    if (entry?.powerSec) candidates.push(entry.powerSec);
+    if (entry?.energySec) candidates.push(entry.energySec);
+  }
+
+  return Math.max(MIN_REFRESH_INTERVAL_SEC, Math.min(...candidates));
+}
+
+/** The cadence in force for one site: its override, else the global default. */
+export function resolveSiteIntervals(
+  config: SolarEdgeConfig,
+  siteId: number
+): SiteRefreshIntervals {
+  const base = config.refreshIntervals ?? DEFAULT_REFRESH_INTERVALS;
+  const override = config.siteRefreshIntervals?.[String(siteId)];
+  if (!override) return base;
+
+  return {
+    powerSec: clampRefreshIntervalSec(override.powerSec, base.powerSec),
+    energySec: clampRefreshIntervalSec(override.energySec, base.energySec),
+  };
+}
 
 /**
  * Stop spending live calls once the day's remaining budget hits this floor,
@@ -340,7 +380,7 @@ export function getDailyQuotaInfo(): SolarEdgeQuotaInfo {
     if (rawCache) {
       const parsedCache = JSON.parse(rawCache);
       lastTimestamp = parsedCache.timestamp || null;
-      if (lastTimestamp && Date.now() - lastTimestamp < CACHE_TTL_MS) {
+      if (lastTimestamp && Date.now() - lastTimestamp < clientCacheTtlMs) {
         isCacheActive = true;
       }
     }
@@ -349,7 +389,7 @@ export function getDailyQuotaInfo(): SolarEdgeQuotaInfo {
       callsMadeToday: count,
       dailyQuotaLimit: DAILY_QUOTA_LIMIT,
       remainingCalls: Math.max(0, DAILY_QUOTA_LIMIT - count),
-      cacheTtlMinutes: Math.round((CACHE_TTL_MS / 60000) * 10) / 10,
+      cacheTtlMinutes: Math.round((clientCacheTtlMs / 60000) * 10) / 10,
       lastFetchTimestamp: lastTimestamp,
       lastFetchTimeString: lastTimestamp ? formatSolarEdgeTimestamp(new Date(lastTimestamp).toISOString()) : null,
       isCacheActive,
@@ -360,7 +400,7 @@ export function getDailyQuotaInfo(): SolarEdgeQuotaInfo {
       callsMadeToday: 0,
       dailyQuotaLimit: DAILY_QUOTA_LIMIT,
       remainingCalls: DAILY_QUOTA_LIMIT,
-      cacheTtlMinutes: Math.round((CACHE_TTL_MS / 60000) * 10) / 10,
+      cacheTtlMinutes: Math.round((clientCacheTtlMs / 60000) * 10) / 10,
       lastFetchTimestamp: null,
       lastFetchTimeString: null,
       isCacheActive: false,
@@ -532,6 +572,34 @@ export interface FetchAccountDataOptions extends SolarEdgeRequestOptions {
   siteIds?: number[];
   /** Skip the live call and serve cache when the daily budget is nearly spent. Default true. */
   respectQuotaReserve?: boolean;
+  /**
+   * The cadence the operator configured, forwarded to the backend.
+   *
+   * The backend — not this file — decides which upstream endpoints are due,
+   * so these travel on every request rather than being applied here. Omitted
+   * leaves the backend on its own env-resolved default.
+   */
+  refreshIntervals?: SiteRefreshIntervals;
+  siteRefreshIntervals?: Record<string, SiteRefreshIntervals>;
+}
+
+/**
+ * The browser's last payload, read straight from localStorage.
+ *
+ * Exists for the boot path: on F5 the React tree starts empty, and a page that
+ * shows nothing until the network answers reads as broken on a kiosk. Returned
+ * regardless of age — the caller pairs it with an immediate forced fetch, so
+ * whatever this hands back is on screen for a second or two at most.
+ */
+export function readCachedSnapshot(): {
+  sites: SolarEdgeRawSite[];
+  overviews: Record<number, SolarEdgeTransformedOverview>;
+  timestamp: number;
+} | null {
+  const sites = readCachedSites();
+  const overviews = readCachedOverviews();
+  if (!sites?.length || !overviews || Object.keys(overviews.data).length === 0) return null;
+  return { sites, overviews: overviews.data, timestamp: overviews.timestamp };
 }
 
 function readCachedSites(): SolarEdgeRawSite[] | null {
@@ -590,6 +658,9 @@ function backendStatusFrom(
     siteErrors: (payload.errors ?? []).map((e) => ({ siteId: e.siteId, message: e.message })),
     staleReason: payload.staleReason ?? null,
     message,
+    // Same reasoning as `sites`: the ceilings come from /health. Left null so
+    // a data poll cannot overwrite what /health reported with a guess.
+    limits: null,
   };
 }
 
@@ -601,6 +672,7 @@ function unreachableBackend(message: string): SolarEdgeBackendStatus {
     siteErrors: [],
     staleReason: null,
     message,
+    limits: null,
   };
 }
 
@@ -624,8 +696,23 @@ export async function fetchSolarEdgeAccountData(
     useMock = false,
     respectQuotaReserve = true,
     siteIds = [],
+    refreshIntervals,
+    siteRefreshIntervals,
     signal,
   } = options;
+
+  // Keep the browser's own reuse window in step with the configured cadence,
+  // so a 30-second board is not held back by a TTL meant for a 5-minute one.
+  if (refreshIntervals) {
+    const fastest = Math.min(
+      refreshIntervals.powerSec,
+      refreshIntervals.energySec,
+      ...Object.values(siteRefreshIntervals ?? {}).flatMap((entry) =>
+        [entry?.powerSec, entry?.energySec].filter((n): n is number => !!n)
+      )
+    );
+    clientCacheTtlMs = Math.max(MIN_REFRESH_INTERVAL_SEC, fastest) * 1000 * 0.9;
+  }
 
   // 1. Mock mode — simulated figures are the point here.
   if (useMock) {
@@ -647,7 +734,7 @@ export async function fetchSolarEdgeAccountData(
   const cachedSites = readCachedSites();
   const cachedOverviews = readCachedOverviews();
   const cacheIsFresh =
-    !!cachedOverviews && Date.now() - cachedOverviews.timestamp < CACHE_TTL_MS;
+    !!cachedOverviews && Date.now() - cachedOverviews.timestamp < clientCacheTtlMs;
 
   if (!forceRefresh && cachedSites && cachedOverviews && cacheIsFresh) {
     return {
@@ -683,6 +770,20 @@ export async function fetchSolarEdgeAccountData(
     const params = new URLSearchParams();
     if (forceRefresh) params.set('refresh', '1');
     if (siteIds.length > 0) params.set('sites', siteIds.join(','));
+
+    // Cadence travels on every request, not just when it changes: the backend
+    // holds it in module memory, and on Cloudflare the isolate that serves the
+    // next poll may never have seen the one that carried the setting.
+    if (refreshIntervals) {
+      params.set('powerSec', String(refreshIntervals.powerSec));
+      params.set('energySec', String(refreshIntervals.energySec));
+    }
+
+    const overrides = Object.entries(siteRefreshIntervals ?? {})
+      .filter(([id]) => Number.isInteger(Number(id)) && Number(id) > 0)
+      .map(([id, iv]) => `${id}:${iv.powerSec}:${iv.energySec}`);
+    if (overrides.length > 0) params.set('siteIntervals', overrides.join(','));
+
     const query = params.toString();
     const payload = await fetchBackend(query ? `/overview?${query}` : '/overview', {
       signal,
@@ -815,11 +916,34 @@ export async function fetchBackendHealth(
       upstreamCallsToday?: number;
       message?: string;
       error?: string;
+      maxCallsPerMin?: number;
+      monthlyCallBudget?: number;
+      minRefreshIntervalSec?: number;
+      maxRefreshIntervalSec?: number;
+      defaultPowerIntervalSec?: number;
+      defaultEnergyIntervalSec?: number;
     };
 
     if (!res.ok || body.ok !== true) {
       return unreachableBackend(body.message || body.error || `Backend HTTP ${res.status}`);
     }
+
+    // Only present from a backend new enough to report them. An older one
+    // leaves this null and the settings panel says so rather than inventing
+    // ceilings it cannot vouch for.
+    const limits: SolarEdgeBackendLimits | null =
+      typeof body.maxCallsPerMin === 'number' && typeof body.monthlyCallBudget === 'number'
+        ? {
+            maxCallsPerMin: body.maxCallsPerMin,
+            monthlyCallBudget: body.monthlyCallBudget,
+            minRefreshIntervalSec: body.minRefreshIntervalSec ?? MIN_REFRESH_INTERVAL_SEC,
+            maxRefreshIntervalSec: body.maxRefreshIntervalSec ?? 86400,
+            defaultPowerIntervalSec:
+              body.defaultPowerIntervalSec ?? DEFAULT_REFRESH_INTERVALS.powerSec,
+            defaultEnergyIntervalSec:
+              body.defaultEnergyIntervalSec ?? DEFAULT_REFRESH_INTERVALS.energySec,
+          }
+        : null;
 
     return {
       reachable: true,
@@ -828,6 +952,7 @@ export async function fetchBackendHealth(
       siteErrors: [],
       staleReason: null,
       message: body.message ?? null,
+      limits,
     };
   } catch (err) {
     if (options.signal?.aborted) throw err;
@@ -943,7 +1068,7 @@ export function loadSolarEdgeConfig(): SolarEdgeConfig {
     const raw = localStorage.getItem(STORAGE_KEY_CONFIG);
     if (!raw) return { ...INITIAL_SOLAREDGE_CONFIG };
     const parsed = JSON.parse(raw);
-    return { ...INITIAL_SOLAREDGE_CONFIG, ...parsed };
+    return normaliseRefreshConfig({ ...INITIAL_SOLAREDGE_CONFIG, ...parsed });
   } catch (err) {
     console.error('Failed to load saved dashboard config, using defaults:', err);
     return { ...INITIAL_SOLAREDGE_CONFIG };
@@ -952,8 +1077,37 @@ export function loadSolarEdgeConfig(): SolarEdgeConfig {
 
 export function saveSolarEdgeConfig(config: SolarEdgeConfig): void {
   try {
-    localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
+    localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(normaliseRefreshConfig(config)));
   } catch (err) {
     console.error('Failed to save dashboard config:', err);
   }
+}
+
+/**
+ * Force every persisted interval back inside [MIN, MAX], on the way in AND out.
+ *
+ * A config written by an older build has no `refreshIntervals` at all, and a
+ * hand-edited localStorage entry can hold anything — including a 1, which
+ * would have this board asking SolarEdge for four sites every second. The
+ * backend clamps too; this is so the settings panel and the poll timer agree
+ * with what the backend will actually do.
+ */
+function normaliseRefreshConfig(config: SolarEdgeConfig): SolarEdgeConfig {
+  const base = config.refreshIntervals ?? DEFAULT_REFRESH_INTERVALS;
+  const refreshIntervals: SiteRefreshIntervals = {
+    powerSec: clampRefreshIntervalSec(base.powerSec, DEFAULT_REFRESH_INTERVALS.powerSec),
+    energySec: clampRefreshIntervalSec(base.energySec, DEFAULT_REFRESH_INTERVALS.energySec),
+  };
+
+  const siteRefreshIntervals: Record<string, SiteRefreshIntervals> = {};
+  for (const [id, entry] of Object.entries(config.siteRefreshIntervals ?? {})) {
+    const siteId = Number(id);
+    if (!Number.isInteger(siteId) || siteId <= 0 || !entry) continue;
+    siteRefreshIntervals[id] = {
+      powerSec: clampRefreshIntervalSec(entry.powerSec, refreshIntervals.powerSec),
+      energySec: clampRefreshIntervalSec(entry.energySec, refreshIntervals.energySec),
+    };
+  }
+
+  return { ...config, refreshIntervals, siteRefreshIntervals };
 }

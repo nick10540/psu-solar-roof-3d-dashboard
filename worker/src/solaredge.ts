@@ -12,6 +12,7 @@
  */
 
 import {
+  intervalsForSite,
   OVERVIEW_CACHE_TTL_MS,
   RATE_LIMIT_WINDOW_MS,
   ResolvedConfig,
@@ -193,12 +194,15 @@ interface CacheEntry {
 }
 
 /**
- * Cache and in-flight promise, keyed by the requested site set.
+ * Last-good payload and in-flight promise, keyed by the requested site set.
  *
- * A single slot was fine while the site list came from env and never
- * changed. Now the browser asks for whichever IDs the operator has bound,
- * so two different requests would otherwise serve each other's payload —
- * a pin would show another campus's numbers for up to the cache TTL.
+ * Keyed rather than a single slot because the browser asks for whichever IDs
+ * the operator has bound: two different requests sharing one slot would serve
+ * each other's payload, and a pin would show another campus's numbers.
+ *
+ * Since the per-endpoint TTLs took over cadence control, this map is no longer
+ * what decides whether a request costs an upstream call. It exists to collapse
+ * simultaneous duplicates and to keep something on screen through an outage.
  */
 const overviewCaches = new Map<string, CacheEntry>();
 const overviewInflights = new Map<string, Promise<OverviewPayload>>();
@@ -390,14 +394,13 @@ interface ColdTotals {
 }
 
 /**
- * Month / year / lifetime, cached far longer than the live figures.
+ * Month / year / lifetime + CO2, on their own cadence.
  *
- * These move slowly — a month total barely changes between two five-minute
- * ticks — while the API charges per minute. Splitting them off means the
- * steady-state cost of a poll is two requests per site instead of three, which
- * is what keeps a three-site dashboard clear of the rate limit.
+ * These move slowly — a month total barely changes between two ticks — while
+ * the API charges per minute, so they are the pair the operator's "energy
+ * totals" interval controls. Keeping them off the live path is what lets the
+ * live pair run at 30 s without tripling the upstream cost.
  */
-const COLD_TOTALS_TTL_MS = 30 * 60 * 1000;
 const coldTotalsCache = new Map<number, { totals: ColdTotals; storedAt: number }>();
 
 export function clearColdTotalsCache(): void {
@@ -442,13 +445,23 @@ async function loadEnvironmentalCo2Kg(
   }
 }
 
+/**
+ * @param ttlMs How long a cached set stays good — the site's `energySec`.
+ *
+ * Deliberately NOT bypassable by `forceRefresh`. A page reload asks for fresh
+ * numbers, and these two calls would add 2 per site to that burst — enough to
+ * cross the per-minute ceiling on a four-site board and stall the reload for
+ * a minute. A lifetime total that is up to one interval old is invisible;
+ * a blank board for 60 s is not.
+ */
 async function loadColdTotals(
   cfg: ResolvedConfig,
   siteId: number,
-  installationDate: string
+  installationDate: string,
+  ttlMs: number
 ): Promise<ColdTotals> {
   const hit = coldTotalsCache.get(siteId);
-  if (hit && Date.now() - hit.storedAt < COLD_TOTALS_TTL_MS) return hit.totals;
+  if (hit && Date.now() - hit.storedAt < ttlMs) return hit.totals;
 
   const { from, to } = monthSeriesRange(installationDate);
   const raw = await getJson<unknown>(
@@ -479,8 +492,11 @@ async function loadColdTotals(
   // at 0.392 kg/kWh), so it belongs on this cache, not on the live path.
   //
   // Fetching it every refresh took the steady-state cost for four sites from
-  // 8 upstream calls to 12, crossing the 10/min ceiling, so the limiter
-  // stalled EVERY poll by ~60s and the dashboard blanked waiting for it.
+  // 8 upstream calls to 12, which crossed the per-minute ceiling of the day
+  // (10), stalled EVERY poll by ~60s and left the dashboard blank waiting for
+  // it. The ceiling is 50 now and would absorb that, but the reason to keep
+  // CO2 here is the one that has not changed: it moves at exactly the rate
+  // lifetime energy does, so refetching it on the live path buys nothing.
   const co2Kg = await loadEnvironmentalCo2Kg(cfg, siteId);
 
   const totals: ColdTotals = {
@@ -580,126 +596,214 @@ async function loadSiteMeta(cfg: ResolvedConfig, desc: SiteDescriptor): Promise<
   }
 }
 
+// ---------------------------------------------------------------------------
+// Per-endpoint caches — where the configurable cadence actually lands
+//
+// One entry per site per endpoint group, each expiring on the interval the
+// operator set for THAT site. The browser ticks at the fastest configured
+// interval and asks for every site every time; these three checks decide
+// which of them costs an upstream call.
+//
+//   powerCache + energyTodayCache  <- powerSec   ("what is happening now")
+//   coldTotalsCache                <- energySec  ("what has accumulated")
+//
+// A stale entry is KEPT, never dropped, when a refetch fails. At a 30-second
+// cadence a lost request is routine — a 429, a timeout, a limiter stall — and
+// blanking a campus on a 72" screen over one of them is far worse than showing
+// a reading one tick old; the failure still travels in `errors` either way.
+// ---------------------------------------------------------------------------
+
+interface PowerCacheEntry {
+  latest: { value: number; timestamp: string } | null;
+  /** Reported samples only, already in the wire shape. */
+  samples: PowerSample[];
+  storedAt: number;
+}
+
+const powerCache = new Map<number, PowerCacheEntry>();
+const energyTodayCache = new Map<number, { dailyWh: number; storedAt: number }>();
+
+/** Forget the live series. Tests and manual resets only. */
+export function clearSeriesCaches(): void {
+  powerCache.clear();
+  energyTodayCache.clear();
+}
+
 /**
- * Fetch one site.
+ * Fetch one site, honouring its configured cadence.
  *
  * Every failure is reported against this site and never thrown: หาดใหญ่ hitting
  * a rate limit must not blank out ตรัง, which is what a thrown error would do
  * to the loop that calls this.
  *
- * Cost: 2 live requests (power + today's energy) plus 1 more only when the
- * 30-minute cold cache has expired.
+ * Cost per round: 0 when nothing is due, 2 when the live pair is (power +
+ * today's energy), 2 more when the totals are. Site metadata is one call a
+ * day and `forceRefresh` deliberately does not touch it — names do not change.
  */
 async function fetchOneSite(
   cfg: ResolvedConfig,
-  desc: SiteDescriptor
+  desc: SiteDescriptor,
+  forceRefresh: boolean
 ): Promise<{
   site: WireSite;
   overview: WireOverview | null;
   power: PowerSample[];
   error?: SiteFetchError;
 }> {
-  const toError = (err: unknown): SiteFetchError => ({
-    siteId: desc.siteId,
-    message: err instanceof Error ? err.message : String(err),
-    status: err instanceof UpstreamError ? err.status : 502,
-  });
+  const siteId = desc.siteId;
+  const { powerSec, energySec } = intervalsForSite(cfg, siteId);
+  const liveTtlMs = powerSec * 1000;
+  const totalsTtlMs = energySec * 1000;
+  const now = Date.now();
 
-  let siteMeta: unknown = null;
-  try {
-    siteMeta = await loadSiteMeta(cfg, desc);
-  } catch (err) {
-    return { site: normaliseSite(desc, null), overview: null, power: [], error: toError(err) };
-  }
+  const site = normaliseSite(desc, await loadSiteMeta(cfg, desc));
 
-  const site = normaliseSite(desc, siteMeta);
-
-  try {
-    // Sequential, not Promise.all: the rate limit is per MINUTE, and firing
-    // every request for every site at once is what tripped it during
-    // development. Spreading them costs a little latency on a 5-minute poll and
-    // buys headroom that matters more.
-    const powerRaw = await getJson<unknown>(cfg, desc.siteId, `/sites/${desc.siteId}/power`);
-    const energyRaw = await getJson<unknown>(cfg, desc.siteId, `/sites/${desc.siteId}/energy`);
-    const cold = await loadColdTotals(cfg, desc.siteId, site.installationDate);
-
-    const powerPoints = seriesPoints(powerRaw);
-    const latest = latestNonNull(powerPoints);
-    const dailyWh = sumNonNull(seriesPoints(energyRaw));
-
-    // Only reported samples. A null is "not measured yet", and carrying it
-    // through would draw the curve down to zero at the end of the day.
-    const power: PowerSample[] = powerPoints
-      .filter((p): p is { timestamp: string; value: number } =>
-        typeof p.value === 'number' && Number.isFinite(p.value)
-      )
-      .map((p) => ({ t: p.timestamp, w: p.value }));
-
-    // A site that reported nothing at all is "no data", not "zero". Zero is a
-    // real measurement — an inverter that is on and producing nothing — and on
-    // a big screen the two must not look the same.
-    if (!latest && dailyWh === 0 && cold.lifetimeWh === 0) {
-      return {
-        site,
-        overview: null,
-        power: [],
-        error: { siteId: desc.siteId, message: 'SolarEdge ยังไม่มีข้อมูลการผลิตของไซต์นี้' },
-      };
-    }
-
-    const overview: WireOverview = {
-      lastUpdateTime: latest?.timestamp || site.lastUpdateTime || new Date().toISOString(),
-      currentPower: { power: latest?.value ?? 0 },
-      lastDayData: { energy: dailyWh },
-      lastMonthData: { energy: cold.monthlyWh },
-      lastYearData: { energy: cold.yearlyWh },
-      lifetimeData: { energy: cold.lifetimeWh },
-      measuredBy: 'INVERTER',
-      co2Kg: cold.co2Kg,
+  // First failure wins: it is the one closest to the cause, and a 429 on
+  // /power followed by a 429 on /energy is one story, not two.
+  let failure: SiteFetchError | undefined;
+  const note = (err: unknown): void => {
+    if (failure) return;
+    failure = {
+      siteId,
+      message: err instanceof Error ? err.message : String(err),
+      status: err instanceof UpstreamError ? err.status : 502,
     };
+  };
 
-    return { site, overview, power };
-  } catch (err) {
-    return { site, overview: null, power: [], error: toError(err) };
+  // --- live pair: /power then today's /energy ------------------------------
+  // Sequential, not Promise.all: the rate limit is per MINUTE, and firing
+  // every request for every site at once is what tripped it during
+  // development. Spreading them costs a little latency and buys headroom
+  // that matters more.
+  let power = powerCache.get(siteId);
+  if (forceRefresh || !power || now - power.storedAt >= liveTtlMs) {
+    try {
+      const points = seriesPoints(await getJson<unknown>(cfg, siteId, `/sites/${siteId}/power`));
+      power = {
+        latest: latestNonNull(points),
+        // Only reported samples. A null is "not measured yet", and carrying it
+        // through would draw the curve down to zero at the end of the day.
+        samples: points
+          .filter((pt): pt is { timestamp: string; value: number } =>
+            typeof pt.value === 'number' && Number.isFinite(pt.value)
+          )
+          .map((pt) => ({ t: pt.timestamp, w: pt.value })),
+        storedAt: Date.now(),
+      };
+      powerCache.set(siteId, power);
+    } catch (err) {
+      note(err);
+    }
   }
+
+  let energy = energyTodayCache.get(siteId);
+  if (forceRefresh || !energy || now - energy.storedAt >= liveTtlMs) {
+    try {
+      const raw = await getJson<unknown>(cfg, siteId, `/sites/${siteId}/energy`);
+      energy = { dailyWh: sumNonNull(seriesPoints(raw)), storedAt: Date.now() };
+      energyTodayCache.set(siteId, energy);
+    } catch (err) {
+      note(err);
+    }
+  }
+
+  // --- accumulating totals: month / year / lifetime / CO2 ------------------
+  let cold: ColdTotals | null = null;
+  try {
+    cold = await loadColdTotals(cfg, siteId, site.installationDate, totalsTtlMs);
+  } catch (err) {
+    note(err);
+  }
+
+  // An overview needs a value — fresh OR cached — for all three groups.
+  //
+  // Filling a missing group with 0 would put a fabricated zero on a 72" screen
+  // under a "Live API" badge, and the two zeros are not the same thing: 0 kW at
+  // 21:00 is a real reading from an inverter with no sun, while 0 kWh lifetime
+  // is a failed request wearing its clothes. Only ever reached on a cold start
+  // — once a group has succeeded once, its cache covers the next failure for a
+  // full interval, which is the whole point of keeping stale entries.
+  if (!power || !energy || !cold) {
+    return {
+      site,
+      overview: null,
+      power: [],
+      error: failure ?? { siteId, message: 'SolarEdge ยังไม่มีข้อมูลการผลิตของไซต์นี้' },
+    };
+  }
+
+  // A site that reported nothing at all is "no data", not "zero" — same
+  // distinction, for a site SolarEdge answers about but has no production for.
+  if (!power.latest && energy.dailyWh === 0 && cold.lifetimeWh === 0) {
+    return {
+      site,
+      overview: null,
+      power: [],
+      error: failure ?? { siteId, message: 'SolarEdge ยังไม่มีข้อมูลการผลิตของไซต์นี้' },
+    };
+  }
+
+  const overview: WireOverview = {
+    lastUpdateTime: power.latest?.timestamp || site.lastUpdateTime || new Date().toISOString(),
+    currentPower: { power: power.latest?.value ?? 0 },
+    lastDayData: { energy: energy.dailyWh },
+    lastMonthData: { energy: cold.monthlyWh },
+    lastYearData: { energy: cold.yearlyWh },
+    lifetimeData: { energy: cold.lifetimeWh },
+    measuredBy: 'INVERTER',
+    co2Kg: cold.co2Kg,
+  };
+
+  // The error rides along WITH the readings when a cached value covered the
+  // gap, so the settings panel still names what failed while the board stays
+  // lit rather than the two outcomes being mutually exclusive.
+  return { site, overview, power: power.samples, error: failure };
 }
 
 export interface FetchOverviewOptions {
+  /**
+   * Bypass the live pair's TTL — a page load asking for numbers now.
+   *
+   * Does NOT touch the totals or the site metadata. The per-minute ceiling
+   * would now absorb those 2 extra calls per site, but a reload is not a
+   * reason to re-derive a lifetime total from a multi-year month series: it
+   * has not moved, and paying for it lengthens the very reload this exists to
+   * make fast.
+   */
   forceRefresh?: boolean;
 }
 
 /**
- * Fetch every configured site, with a shared server-side cache.
+ * Assemble every configured site.
  *
- * A failed site yields an entry in `errors` and NO overview — never a
- * fabricated stand-in. The dashboard already renders a site with no overview as
- * "ไม่มีข้อมูล", which is the honest outcome on a 72" screen.
+ * No longer TTL-gated as a whole — the per-endpoint caches above decide what
+ * costs an upstream call, so re-assembling the payload on every request is
+ * free when nothing is due, and each site can run on its own cadence. What
+ * survives from the old single-slot design is the in-flight collapse (two
+ * kiosk tabs asking in the same instant share one round) and the last-good
+ * payload `lastGoodPayload` serves through an outage.
+ *
+ * A failed site yields an entry in `errors`. It keeps its overview only when
+ * a previous round's reading is still cached; otherwise it has none, and the
+ * dashboard renders "ไม่มีข้อมูล" rather than a fabricated stand-in.
  */
 export async function fetchAllOverviews(
   cfg: ResolvedConfig,
   options: FetchOverviewOptions = {}
 ): Promise<OverviewPayload> {
   const { forceRefresh = false } = options;
-
   const key = siteSetKey(cfg);
-  const cached = overviewCaches.get(key);
 
-  if (!forceRefresh && cached && Date.now() - cached.storedAt < OVERVIEW_CACHE_TTL_MS) {
-    return { ...cached.payload, fromCache: true };
-  }
-
-  // Collapse concurrent misses into one upstream round. Two kiosk tabs
-  // refreshing together should cost one fetch, not two.
   const inflight = overviewInflights.get(key);
   if (inflight) return inflight;
 
   const pending = (async (): Promise<OverviewPayload> => {
-    // One site at a time. Each site costs 2-3 upstream requests and the API's
-    // rate limit is per MINUTE — fanning three sites out at once was enough to
-    // trip it during development. A 5-minute poll has all the time it needs.
+    const callsBefore = upstreamCallsToday();
+
+    // One site at a time, for the per-minute reason spelled out in fetchOneSite.
     const results: Array<Awaited<ReturnType<typeof fetchOneSite>>> = [];
     for (const desc of cfg.sites) {
-      results.push(await fetchOneSite(cfg, desc));
+      results.push(await fetchOneSite(cfg, desc, forceRefresh));
     }
 
     const sites: WireSite[] = [];
@@ -720,12 +824,13 @@ export async function fetchAllOverviews(
       powerSeries,
       errors,
       fetchedAt: Date.now(),
-      fromCache: false,
+      // "Nothing was due": every figure in this payload came out of a cache.
+      fromCache: upstreamCallsToday() === callsBefore,
       upstreamCallsToday: upstreamCallsToday(),
     };
 
-    // Only cache a round that produced at least one reading. Caching a total
-    // outage for 4.5 minutes would turn a transient blip into a visible gap.
+    // Only keep a round that produced at least one reading. Storing a total
+    // outage would hand `lastGoodPayload` an empty board to serve.
     if (Object.keys(overviews).length > 0) {
       overviewCaches.set(key, { payload, storedAt: Date.now() });
     }
@@ -739,12 +844,19 @@ export async function fetchAllOverviews(
   return pending;
 }
 
-/** Last good payload, used to keep the screen alive through an upstream outage. */
+/**
+ * Last good payload, used to keep the screen alive through an upstream outage.
+ *
+ * Bounded by OVERVIEW_CACHE_TTL_MS so a board that has been unreachable for
+ * longer than that reports the outage instead of quietly presenting yesterday's
+ * production as current.
+ */
 export function lastGoodPayload(): OverviewPayload | null {
   // Newest cached set wins: with several site sets in play, the most recent
   // round is the closest thing to "what the screen last showed".
   let newest: CacheEntry | null = null;
   for (const entry of overviewCaches.values()) {
+    if (Date.now() - entry.storedAt >= OVERVIEW_CACHE_TTL_MS) continue;
     if (!newest || entry.storedAt > newest.storedAt) newest = entry;
   }
   return newest ? { ...newest.payload, fromCache: true } : null;

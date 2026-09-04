@@ -8,6 +8,10 @@
  * Give that line a list instead of a single file and the clips play in order,
  * the last one handing back to the first.
  *
+ * Footage that runs too slow gets a line in SITE_MEDIA_SPEED rather than an
+ * ffmpeg re-encode, so the number stays one edit away and swapping in new
+ * footage needs no re-encode to keep the pace.
+ *
  * `code` is the key rather than `id` because ids are reassigned when a pin is
  * deleted and re-added, while the code stays with the physical site.
  *
@@ -28,10 +32,26 @@ const VIDEO_EXTENSIONS = /\.(mp4|webm|ogv|mov|m4v)$/i;
 const SITE_MEDIA_FILES: Record<string, string | string[]> = {
   'MEA-SRT-01': 'vid-suraj.mp4', // วิทยาเขตสุราษฎร์ธานี
   'MEA-TRG-03': 'vid-trang.mp4', // วิทยาเขตตรัง
-  // หาดใหญ่: 3 คลิปเล่นวนต่อกัน 1 -> 2 -> 3 -> 1
+  // หาดใหญ่: 3 คลิปเล่นวนต่อกัน 1 -> 2 -> 3 -> 1 (เร่ง 1.75x ดู SITE_MEDIA_SPEED)
   'MEA-HDY-04': ['vid-hatyai.mp4', 'vid-hatyai2.mp4', 'vid-hatyai3.mp4'],
   'MEA-PTN-05': 'vid-pattani.mp4', // วิทยาเขตปัตตานี
   'MEA-PKT-02': 'vid-puket.mp4', // วิทยาเขตภูเก็ต
+};
+
+/**
+ * Site `code` -> how fast to run that site's clips, where 1 is the file's own
+ * speed. A site listed here speeds up every clip in its list, not just the
+ * first, so a playlist keeps one consistent pace.
+ *
+ * This is deliberately not baked into the files with ffmpeg: the files stay at
+ * full quality, the number is one edit away, and new footage dropped in under
+ * the same name picks up the speed without a re-encode.
+ *
+ * Values much past ~2 read as broken rather than brisk, and the element rejects
+ * a rate it cannot resample, so keep these modest.
+ */
+const SITE_MEDIA_SPEED: Record<string, number> = {
+  'MEA-HDY-04': 1.75, // หาดใหญ่: ทั้ง 3 คลิป
 };
 
 export interface SiteMedia {
@@ -68,4 +88,18 @@ export function resolveSiteMediaPlaylist(code: string): SiteMedia[] {
   }
 
   return playlist;
+}
+
+/**
+ * How fast to run this site's clips - 1, the file's own speed, unless the site
+ * is listed in SITE_MEDIA_SPEED.
+ *
+ * Callers must put this on the element's `defaultPlaybackRate`, not only on
+ * `playbackRate`. Assigning `src` to hand over to the next clip reruns the
+ * media load algorithm, and that resets `playbackRate` back to
+ * `defaultPlaybackRate` - set only the latter and every clip after the first
+ * quietly drops to 1x.
+ */
+export function resolveSiteMediaSpeed(code: string): number {
+  return SITE_MEDIA_SPEED[code] ?? 1;
 }
