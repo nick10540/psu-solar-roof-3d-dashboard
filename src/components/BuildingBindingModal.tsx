@@ -326,7 +326,7 @@ export const BuildingBindingModal: React.FC<BuildingBindingModalProps> = ({
                 <div className="p-2 rounded-xl bg-slate-900/70 border border-sky-500/20">
                   <span className="text-[10px] text-slate-400 block">ลดการปล่อย CO₂</span>
                   <span className="text-sm font-bold font-mono text-teal-300">
-                    {(sum.co2Kg / 1000).toFixed(2)} tonCO₂
+                    {(sum.co2Kg / 1000).toFixed(2)} tonCO₂e
                   </span>
                 </div>
               </div>
@@ -407,7 +407,7 @@ export const BuildingBindingModal: React.FC<BuildingBindingModalProps> = ({
                 <div className="text-[8.5px] text-slate-400 leading-none">ลดการปล่อย CO₂</div>
                 <div className="font-bold font-mono text-[11px] text-teal-300">
                   {known.length > 0 ? (sum.co2Kg / 1000).toFixed(2) : '—'}
-                  <span className="text-[8px] text-teal-400/80 font-normal ml-0.5">tonCO₂</span>
+                  <span className="text-[8px] text-teal-400/80 font-normal ml-0.5">tonCO₂e</span>
                 </div>
               </div>
             </div>

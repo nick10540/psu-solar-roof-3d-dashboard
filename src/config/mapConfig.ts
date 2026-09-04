@@ -124,6 +124,25 @@ export const ORBIT_DEG_PER_SEC = 4.5;
 /** Minimum gap between React state syncs of the bearing/pitch badges, in ms. */
 export const CAMERA_BADGE_THROTTLE_MS = 250;
 
+/**
+ * Quiet time after the last `moveend` before the camera is written to storage.
+ *
+ * A scroll-wheel zoom fires one `moveend` per tick; this coalesces the whole
+ * gesture into a single write. Long enough to catch the tail of a flick, short
+ * enough that a reload moments after a move still keeps it.
+ */
+export const CAMERA_SAVE_DEBOUNCE_MS = 700;
+
+/**
+ * Longest the write above may be deferred while movement keeps coming.
+ *
+ * Auto-orbit rewrites the bearing every frame, and every one of those fires
+ * `moveend` - so a pure debounce would reset forever and never checkpoint a
+ * pan made while the board is orbiting. This is the ceiling that breaks that
+ * standoff.
+ */
+export const CAMERA_SAVE_MAX_WAIT_MS = 4000;
+
 // ---------------------------------------------------------------------------
 // Tile endpoints
 // ---------------------------------------------------------------------------
@@ -177,6 +196,74 @@ export const SKY_SPEC = {
 
 /** Deep-sea tone used by the background layer. */
 export const BASE_BACKGROUND_COLOR = '#071018';
+
+/**
+ * The link line: one arc through all five site pins, in pin order, drawn on
+ * once as the intro hands over and then left standing.
+ *
+ * Deliberately NOT listed in LAYER_VISIBILITY below. The link belongs to the
+ * dashboard rather than to any one basemap, so it survives a switch between
+ * satellite, hybrid and dark instead of being toggled with them.
+ *
+ *  - `curvature` is the sideways bulge of each arc as a fraction of the
+ *    segment's own length. Past ~0.25 the arcs start crossing the coastline
+ *    they are meant to follow.
+ *  - `stepsPerSegment` is how finely each arc is sampled. 28 keeps a 300 km
+ *    span smooth at zoom 17 and still leaves the whole line at ~110 points,
+ *    which is nothing to re-upload.
+ *  - `drawMs` is the one-shot reveal. Long enough to read as deliberate on a
+ *    72" screen, short enough not to hold the room.
+ */
+export const SITE_LINK_SPEC = {
+  sourceId: 'mea-site-link-source',
+  glowLayerId: 'mea-site-link-glow',
+  lineLayerId: 'mea-site-link-line',
+  curvature: 0.16,
+  stepsPerSegment: 28,
+  drawMs: 2600,
+  /** The line once it has been drawn. */
+  bodyColor: 'rgba(56,189,248,0.9)',
+  /** The bright tip that leads the reveal, and the flow pulses after it. */
+  headColor: 'rgba(224,247,255,1)',
+  /** Wide, soft pass underneath, so the line reads over bright rooftops too. */
+  glowColor: 'rgba(14,165,233,0.4)',
+
+  // --- The flow, once the line is drawn -----------------------------------
+  /**
+   * Master switch for the pulses that run สุราษฎร์ธานี -> ปัตตานี for ever.
+   *
+   * READ THIS BEFORE LEAVING IT ON. Without it the drawn line is free: a flat
+   * colour ramp that MapLibre uploads once and never touches again, and the
+   * map goes back to repainting only when the camera moves. With it, every
+   * `flowFrameMs` re-uploads two gradient ramps and dirties the map - which on
+   * an idle board means repainting the whole WebGL scene, 4K raster tiles
+   * included, for as long as the dashboard is up.
+   *
+   * That is a real and permanent cost on the venue machine, accepted here
+   * because a ceremony screen is meant to look alive. Turn it off for a panel
+   * that has to share a GPU, or that will run for days.
+   */
+  flow: true,
+  /** One pulse's trip along the whole chain, pin 1 to pin 5. */
+  flowMs: 4200,
+  /**
+   * Pulses in flight at once, spread evenly along the line.
+   *
+   * One reads as a lonely dot with a long empty wait; two keeps something
+   * visible on the line at all times without it looking like a chase light.
+   */
+  flowPulses: 2,
+  /** Half-width of a pulse, as a fraction of the line's length. */
+  flowPulseWidth: 0.06,
+  /**
+   * Minimum gap between flow frames - ~30fps.
+   *
+   * The pulses cross the screen over four seconds; nothing about that needs
+   * 60fps, and halving the frame rate halves everything the paragraph above
+   * is warning about.
+   */
+  flowFrameMs: 33,
+} as const;
 
 /**
  * Which layers are visible per basemap mode.

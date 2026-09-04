@@ -67,7 +67,7 @@ export const EnvironmentalCard: React.FC<EnvironmentalCardProps> = ({ overview }
             <span className="text-xs font-bold font-mono text-teal-200">
               {overview.co2ReducedTons.toLocaleString('en-US', { minimumFractionDigits: 1 })}
             </span>
-            <span className="text-[9px] text-slate-400 ml-1 font-mono">tonCO₂</span>
+            <span className="text-[9px] text-slate-400 ml-1 font-mono">tonCO₂e</span>
           </div>
         </div>
       </div>

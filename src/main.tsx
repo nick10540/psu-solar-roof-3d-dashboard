@@ -1,12 +1,29 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { setWorkerUrl } from 'maplibre-gl';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+import { IntroVideoOverlay } from './components/IntroVideoOverlay.tsx';
 import {
   registerTileCacheWorker,
   prefetchSouthernThailandTiles,
 } from './services/tileCacheService';
 import './index.css';
+
+/**
+ * Point MapLibre at its worker.
+ *
+ * Must happen before any Map is constructed, which is why it sits here rather
+ * than in Solar3DViewer: the worker pool is created with the first map and
+ * reads this once.
+ *
+ * MapLibre's own guess at the URL cannot work under Vite - the file is not
+ * beside the library in either the dev dep cache or a build - so the worker
+ * never starts and every worker-backed source hangs unloaded without raising
+ * anything. `maplibreWorkerAssets` in vite.config.ts serves this path in both
+ * dev and build; the full story is in the comment there.
+ */
+setWorkerUrl('/maplibre/maplibre-gl-worker.mjs');
 
 // Safely suppress harmless third-party browser extension errors (e.g., MetaMask, crypto wallet injects)
 if (typeof window !== 'undefined') {
@@ -46,6 +63,18 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
       <App />
+      {/*
+        Intro clip, last so it paints over the dashboard (see
+        IntroVideoOverlay.tsx). App mounts underneath it and warms up during
+        the clip, so this is a cover, not a gate - and it removes itself on
+        the first of: clip ended, operator skipped, file failed.
+
+        Inside the same boundary as App on purpose: an intro that could throw
+        its own error card into the page alongside a running dashboard would
+        be worse than the crash it was reporting. The component keeps its own
+        risky calls (play, sessionStorage) wrapped.
+      */}
+      <IntroVideoOverlay />
     </ErrorBoundary>
   </StrictMode>,
 );

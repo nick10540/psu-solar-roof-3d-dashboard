@@ -59,7 +59,7 @@ export function co2TonsFromKg(co2Kg: number): number {
   return co2Kg / 1000;
 }
 
-/** kWh -> tonnes of CO2 avoided ("ton Carbon eq"). */
+/** kWh -> tonnes of CO2 avoided ("tonCO₂e"). */
 export function co2TonsFromKwh(kwh: number): number {
   return (kwh * CO2_KG_PER_KWH) / 1000;
 }

@@ -223,7 +223,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
       NO_DATA
     ) : (
       <>
-        <CountUp target={metrics.co2Kg / 1000} decimals={2} /> tonCO₂
+        <CountUp target={metrics.co2Kg / 1000} decimals={2} /> tonCO₂e
       </>
     );
   // Today's figures stay derived: SolarEdge reports CO2 cumulatively only.
@@ -232,7 +232,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
       NO_DATA
     ) : (
       <>
-        ~<CountUp target={(todayEnergyKwh * CO2_KG_PER_KWH_SE) / 1000} decimals={2} /> tonCO₂/วัน
+        ~<CountUp target={(todayEnergyKwh * CO2_KG_PER_KWH_SE) / 1000} decimals={2} /> tonCO₂e/วัน
       </>
     );
   const treesTodayText =

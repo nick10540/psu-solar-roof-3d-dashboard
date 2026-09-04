@@ -4,10 +4,10 @@
  *
  *   1. กำลังติดตั้งรวม            (kWp)      - hero figure
  *   2. พลังงานวันนี้ | พลังงานรวม                (kWh)
- *   3. ลดการปล่อย CO₂ | ปลูกต้นไม้เทียบเท่า        (tonCO₂ / ต้น)
+ *   3. ลดการปล่อย CO₂ | ปลูกต้นไม้เทียบเท่า        (tonCO₂e / ต้น)
  *
  * Labels are Thai, matching the pin cards on the map. Units are fixed
- * dashboard-wide: energy is always kWh and CO2 is always tonCO₂, never
+ * dashboard-wide: energy is always kWh and CO2 is always tonCO₂e, never
  * switched by magnitude.
  *
  * Shape: a landscape box - hero cell on the left, the four secondary figures in
@@ -234,7 +234,7 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
             label="ลดการปล่อย CO₂"
             value={co2Tons}
             decimals={1}
-            unit="tonCO₂"
+            unit="tonCO₂e"
             tone="text-teal-300"
             hasData={co2Tons !== null}
           />

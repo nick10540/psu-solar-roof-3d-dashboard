@@ -41,7 +41,7 @@ interface CountUpProps {
    * Decimal places to show. Omitted, it follows the target's own precision, so
    * 3,213.5 keeps its tenth and 8,612 does not grow a ".0".
    *
-   * Needed as well as thousands separators: this dashboard prints 0.61 tonCO₂
+   * Needed as well as thousands separators: this dashboard prints 0.61 tonCO₂e
    * next to 611,317 kWh, so a single fixed format cannot serve both.
    */
   decimals?: number;

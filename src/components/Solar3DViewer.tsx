@@ -47,7 +47,23 @@ import {
   DEFAULT_BEARING,
   ORBIT_DEG_PER_SEC,
   CAMERA_BADGE_THROTTLE_MS,
+  CAMERA_SAVE_DEBOUNCE_MS,
+  CAMERA_SAVE_MAX_WAIT_MS,
+  SITE_LINK_SPEC,
 } from '../config/mapConfig';
+import {
+  buildSiteLinkFeature,
+  easeOutCubic,
+  siteLinkFlowGradient,
+  siteLinkGradient,
+} from '../services/siteLinkService';
+import { hasIntroFinished, subscribeIntroFinished } from '../services/introHandoff';
+import {
+  MapCameraState,
+  loadMapCamera,
+  normaliseCamera,
+  saveMapCamera,
+} from '../services/mapCameraService';
 import {
   MARKER_FONT_SIZES,
   MARKER_CARD,
@@ -130,13 +146,13 @@ const CARD_IDLE = 'border-sky-400/60 bg-slate-950/90 hover:border-sky-300';
 /**
  * CO2 for the per-site card.
  *
- * tonCO2 everywhere, including for the small sites where SolarEdge itself
+ * tonCO₂e everywhere, including for the small sites where SolarEdge itself
  * still prints kilograms. One unit across every surface was the explicit
  * ask: a card reading kg beside one reading ton invites the two to be
  * compared as if they were the same scale.
  */
 function formatCo2(kg: number): { value: string; unit: string } {
-  return { value: (kg / 1000).toFixed(2), unit: 'tonCO₂' };
+  return { value: (kg / 1000).toFixed(2), unit: 'tonCO₂e' };
 }
 
 /** Accumulated energy. kWh everywhere - the dashboard never switches to MWh. */
@@ -258,7 +274,7 @@ function createMarkerElement(site: BuildingInfo): {
                 <div class="text-slate-400 leading-none font-medium" style="font-size:${s(MARKER_FONT_SIZES.metricLabel)}px">ลดการปล่อย CO₂</div>
                 <div class="font-bold font-mono text-teal-300 flex items-baseline justify-center gap-0.5 whitespace-nowrap" style="font-size:${s(MARKER_FONT_SIZES.metricValue)}px">
                   <span data-mea="co2Val">0.0</span>
-                  <span data-mea="co2Unit" class="text-teal-400/80 font-normal" style="font-size:${s(MARKER_FONT_SIZES.metricUnit)}px">kg</span>
+                  <span data-mea="co2Unit" class="text-teal-400/80 font-normal" style="font-size:${s(MARKER_FONT_SIZES.metricUnit)}px">tonCO₂e</span>
                 </div>
               </div>
             </div>
@@ -424,7 +440,7 @@ function patchMarker(
 
   const co2 =
     metrics.co2Kg === null ? { value: NO_DATA, unit: '' } : formatCo2(metrics.co2Kg);
-  // Card prints tonCO2 while the metric carries kg - convert before easing, or
+  // Card prints tonCO₂e while the metric carries kg - convert before easing, or
   // the tween runs across a thousand-fold gap on the way to the same figure.
   animateNumberText(handle.co2ValEl, metrics.co2Kg === null ? null : metrics.co2Kg / 1000, {
     decimals: 2,
@@ -508,6 +524,21 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
   const isMovingRef = useRef<boolean>(false);
   const errorLogCountRef = useRef<number>(0);
 
+  // --- Camera persistence bookkeeping (see mapCameraService) ---
+  /** Pending debounced write, so teardown can flush instead of dropping it. */
+  const cameraSaveTimerRef = useRef<number | null>(null);
+  /**
+   * Last camera actually written. A fresh reading equal to this one is not
+   * written again, which is what keeps an idle orbiting board - `moveend`
+   * every frame, nothing meaningful changing - from touching storage at all.
+   */
+  const lastSavedCameraRef = useRef<MapCameraState | null>(null);
+  /**
+   * Auto-orbit state, mirrored for the init effect, whose dependency list has
+   * to stay `[remountKey]` (see the handlers box above for why).
+   */
+  const isAutoOrbitRef = useRef<boolean>(false);
+
   /**
    * Latest-callback box. Prop identities change on every parent render; reading
    * them through a ref keeps the init effect's dependency list empty.
@@ -524,9 +555,18 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
   /** Control drawer held open by its grab handle, for pointers that cannot hover. */
   const [isControlsPinned, setIsControlsPinned] = useState<boolean>(false);
   const [isAutoOrbit, setIsAutoOrbit] = useState<boolean>(false);
-  const [camera, setCamera] = useState<{ pitch: number; bearing: number }>({
-    pitch: DEFAULT_PITCH,
-    bearing: DEFAULT_BEARING,
+  /**
+   * Seeded from the saved camera, not from the defaults: the badges are
+   * rendered before the map's first `moveend` has a chance to sync them, and a
+   * restored board that reads "60° / 17°" over a view that is nothing of the
+   * kind is worse than no badge at all.
+   */
+  const [camera, setCamera] = useState<{ pitch: number; bearing: number }>(() => {
+    const saved = loadMapCamera();
+    return {
+      pitch: saved?.pitch ?? DEFAULT_PITCH,
+      bearing: saved?.bearing ?? DEFAULT_BEARING,
+    };
   });
   /** True as soon as the Map object exists. Markers only need this. */
   const [isMapCreated, setIsMapCreated] = useState<boolean>(false);
@@ -543,13 +583,26 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     const container = mapContainerRef.current;
     if (!container) return;
 
+    /**
+     * Where the board was last left pointing, or null for a first run.
+     *
+     * Read here rather than from a value captured at mount, so the rebuild
+     * after a WebGL context loss comes back to the framing the old map was
+     * destroyed on - the teardown below flushes it on the way out.
+     */
+    const restored = loadMapCamera();
+    lastSavedCameraRef.current = restored;
+
     const map = new maplibregl.Map({
       container,
       style: buildUnifiedMapStyle(),
-      center: REGIONAL_CENTER,
-      zoom: DEFAULT_ZOOM,
-      pitch: DEFAULT_PITCH,
-      bearing: DEFAULT_BEARING,
+      // Constructor options, deliberately not a `jumpTo` after load: the map
+      // requests the right tiles from the start, and the audience never sees
+      // it open on the wide shot and then snap somewhere else.
+      center: restored?.center ?? REGIONAL_CENTER,
+      zoom: restored?.zoom ?? DEFAULT_ZOOM,
+      pitch: restored?.pitch ?? DEFAULT_PITCH,
+      bearing: restored?.bearing ?? DEFAULT_BEARING,
 
       // --- Tile-request envelope: Southern Thailand only ---
       maxBounds: MAP_MAX_BOUNDS,
@@ -610,6 +663,68 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       });
     };
 
+    // --- Camera persistence -----------------------------------------------
+    /**
+     * Write the camera, but only if it is not what was written last.
+     *
+     * The bearing is left out of that comparison while auto-orbit is running.
+     * Orbit rewrites it every frame, so counting it would have an untouched
+     * board writing to storage several times a second all day - and a bearing
+     * nobody chose is not state worth persisting. A pan or a zoom during an
+     * orbit still checkpoints, carrying whatever bearing the orbit is on.
+     */
+    const checkpointCamera = () => {
+      const c = map.getCenter();
+      const next = normaliseCamera({
+        center: [c.lng, c.lat],
+        zoom: map.getZoom(),
+        pitch: map.getPitch(),
+        bearing: map.getBearing(),
+      });
+      const prev = lastSavedCameraRef.current;
+
+      const moved =
+        !prev ||
+        prev.center[0] !== next.center[0] ||
+        prev.center[1] !== next.center[1] ||
+        prev.zoom !== next.zoom ||
+        prev.pitch !== next.pitch ||
+        (!isAutoOrbitRef.current && prev.bearing !== next.bearing);
+
+      if (!moved) return;
+      lastSavedCameraRef.current = next;
+      saveMapCamera(next);
+    };
+
+    /** How long a write has been waiting, for the max-wait ceiling below. */
+    let checkpointPendingSince = 0;
+
+    const runCheckpoint = () => {
+      if (cameraSaveTimerRef.current !== null) {
+        window.clearTimeout(cameraSaveTimerRef.current);
+        cameraSaveTimerRef.current = null;
+      }
+      checkpointPendingSince = 0;
+      checkpointCamera();
+    };
+
+    const scheduleCheckpoint = () => {
+      const now = performance.now();
+      if (checkpointPendingSince === 0) {
+        checkpointPendingSince = now;
+      } else if (now - checkpointPendingSince >= CAMERA_SAVE_MAX_WAIT_MS) {
+        // Movement has not stopped coming for long enough that waiting for
+        // quiet is no longer a plan. See CAMERA_SAVE_MAX_WAIT_MS.
+        runCheckpoint();
+        return;
+      }
+
+      if (cameraSaveTimerRef.current !== null) {
+        window.clearTimeout(cameraSaveTimerRef.current);
+      }
+      cameraSaveTimerRef.current = window.setTimeout(runCheckpoint, CAMERA_SAVE_DEBOUNCE_MS);
+    };
+
     // --- Interaction class: drop blur + animations while the camera moves ---
     const handleMoveStart = () => {
       isMovingRef.current = true;
@@ -620,6 +735,7 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       container.classList.remove('map-interacting');
       lastBadgeSyncRef.current = 0; // force one final accurate sync
       syncCameraBadges();
+      scheduleCheckpoint();
     };
 
     const handleClick = (e: maplibregl.MapMouseEvent) => {
@@ -691,6 +807,11 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
 
     // --- Teardown: everything above must be released -----------------------
     return () => {
+      // Flush first, while the map is still readable. This is what carries the
+      // framing across a WebGL rebuild, and what stops a reload landing inside
+      // the debounce window from losing the operator's last move.
+      runCheckpoint();
+
       if (restoreTimer !== null) window.clearTimeout(restoreTimer);
       if (cameraRafRef.current !== null) {
         cancelAnimationFrame(cameraRafRef.current);
@@ -753,6 +874,200 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     if (!isStyleReady) return;
     applyLayerVisibility(activeLayer);
   }, [isStyleReady, activeLayer, applyLayerVisibility]);
+
+  // -------------------------------------------------------------------------
+  // Site link line
+  //
+  // One arc through all five pins, drawn on once as the intro hands the screen
+  // over, then left standing for the rest of the event. The geometry and the
+  // reveal gradient live in siteLinkService; this owns the source, the layers
+  // and the single animation frame loop.
+  // -------------------------------------------------------------------------
+  /** Set by the intro overlay; already true when there was no intro to play. */
+  const [introFinished, setIntroFinished] = useState<boolean>(hasIntroFinished);
+  useEffect(() => subscribeIntroFinished(() => setIntroFinished(true)), []);
+
+  /**
+   * Which pins the line runs through, as a string.
+   *
+   * `buildings` is NOT stable across ticks - the live simulator advances every
+   * site's power and energy with `setBuildings(prev => prev.map(...))`, so the
+   * array gets a fresh identity several times a minute. Memoising the geometry
+   * on that identity re-uploaded a 113-point line on every tick, and - far
+   * worse - re-ran the reveal effect below, which restarted the draw from zero
+   * before it could ever finish. Only a pin being added, removed or moved is
+   * a change this line cares about.
+   */
+  const siteLinkKey = buildings.map((b) => `${b.id}:${b.lng},${b.lat}`).join('|');
+
+  const siteLinkFeature = useMemo(
+    () => buildSiteLinkFeature(buildings.map((b) => ({ lng: b.lng, lat: b.lat }))),
+    // `buildings` is read here but deliberately not a dependency; `siteLinkKey`
+    // is the part of it this geometry depends on. See above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [siteLinkKey]
+  );
+
+  const linkDrawRafRef = useRef<number | null>(null);
+  /** The held state. Once drawn, the line is never redrawn from zero. */
+  const linkDrawnRef = useRef<boolean>(false);
+  /**
+   * True once the source and both layers exist.
+   *
+   * The reveal waits on this rather than on the geometry itself, so that a
+   * later change to the pins updates the line without restarting its draw.
+   */
+  const [isLinkReady, setIsLinkReady] = useState<boolean>(false);
+
+  // --- Source + layers ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isStyleReady) return;
+
+    const source = map.getSource(SITE_LINK_SPEC.sourceId) as maplibregl.GeoJSONSource | undefined;
+
+    if (!siteLinkFeature) {
+      // Fewer than two pins - nothing to link. Emptied rather than torn down,
+      // so adding a pin back just refills the line it already has.
+      source?.setData({ type: 'FeatureCollection', features: [] });
+      return;
+    }
+
+    if (source) {
+      source.setData(siteLinkFeature);
+      return;
+    }
+
+    map.addSource(SITE_LINK_SPEC.sourceId, {
+      type: 'geojson',
+      data: siteLinkFeature,
+      // Required for `line-progress`. Without it the reveal gradient is a
+      // silent no-op and the whole line simply appears at once.
+      lineMetrics: true,
+    });
+
+    // Drawn twice: a wide blurred pass so the line still reads over a bright
+    // rooftop, then the crisp stroke over it. Both open fully hidden - or
+    // fully drawn, if a WebGL rebuild is re-adding them after the fact.
+    const openingProgress = linkDrawnRef.current ? 1 : 0;
+
+    map.addLayer({
+      id: SITE_LINK_SPEC.glowLayerId,
+      type: 'line',
+      source: SITE_LINK_SPEC.sourceId,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-width': 10,
+        'line-blur': 8,
+        'line-gradient': siteLinkGradient(openingProgress, SITE_LINK_SPEC.glowColor),
+      },
+    } as maplibregl.LayerSpecification);
+
+    map.addLayer({
+      id: SITE_LINK_SPEC.lineLayerId,
+      type: 'line',
+      source: SITE_LINK_SPEC.sourceId,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-width': 2.4,
+        'line-gradient': siteLinkGradient(openingProgress),
+      },
+    } as maplibregl.LayerSpecification);
+
+    setIsLinkReady(true);
+  }, [isStyleReady, siteLinkFeature]);
+
+  // --- The reveal, then the flow ---
+  // Deps are three booleans that each flip once. In particular the geometry is
+  // NOT one of them: the pins carry live figures that change on every tick, and
+  // keying the draw on those restarted it forever.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !isStyleReady || !introFinished || !isLinkReady) return;
+    if (!map.getLayer(SITE_LINK_SPEC.lineLayerId)) return;
+
+    /** Both passes get the same ramp, in their own colour. */
+    const paint = (
+      build: (progress: number, bodyColor?: string) => ReturnType<typeof siteLinkGradient>,
+      value: number
+    ) => {
+      // The layers can go mid-flight: a WebGL loss rebuilds the whole style.
+      if (!map.getLayer(SITE_LINK_SPEC.lineLayerId)) return;
+      map.setPaintProperty(SITE_LINK_SPEC.lineLayerId, 'line-gradient', build(value));
+      map.setPaintProperty(
+        SITE_LINK_SPEC.glowLayerId,
+        'line-gradient',
+        build(value, SITE_LINK_SPEC.glowColor)
+      );
+    };
+
+    const setDrawProgress = (progress: number) => paint(siteLinkGradient, progress);
+    const setFlowPhase = (phase: number) => paint(siteLinkFlowGradient, phase);
+
+    // A venue machine asking for reduced motion gets the finished line and
+    // nothing moving - index.css already treats that setting as a kill switch
+    // for this dashboard's animations.
+    const prefersReducedMotion =
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
+    if (prefersReducedMotion) {
+      setDrawProgress(1);
+      linkDrawnRef.current = true;
+      return;
+    }
+
+    // Wall-clock, not an accumulated per-frame delta: rAF stops entirely while
+    // the page is hidden, and coming back to a line frozen half-drawn would be
+    // worse than coming back to a finished one.
+    const startedAt = performance.now();
+    /** Already drawn - a rebuild re-added the layers - so go straight to flow. */
+    const skipDraw = linkDrawnRef.current;
+    let lastFlowFrame = 0;
+
+    const step = (now: number) => {
+      const drawT = (now - startedAt) / SITE_LINK_SPEC.drawMs;
+
+      if (!skipDraw && drawT < 1) {
+        setDrawProgress(easeOutCubic(drawT));
+        linkDrawRafRef.current = requestAnimationFrame(step);
+        return;
+      }
+
+      // --- Drawn. From here the line is permanent; only the pulses move. ---
+      if (!linkDrawnRef.current) {
+        linkDrawnRef.current = true;
+        setDrawProgress(1);
+      }
+
+      if (!SITE_LINK_SPEC.flow) {
+        // Held, and free: a flat colour ramp MapLibre uploads once. Stopping
+        // the loop here is also what lets the map go back to repainting only
+        // when the camera moves.
+        linkDrawRafRef.current = null;
+        return;
+      }
+
+      // Throttled to `flowFrameMs`. Still driven by rAF rather than an
+      // interval, so the pulses stop dead while the page is hidden instead of
+      // queueing up frames nobody is watching.
+      if (now - lastFlowFrame >= SITE_LINK_SPEC.flowFrameMs) {
+        lastFlowFrame = now;
+        // Phase off the clock, not accumulated: a dropped frame shifts nothing.
+        setFlowPhase((now % SITE_LINK_SPEC.flowMs) / SITE_LINK_SPEC.flowMs);
+      }
+
+      linkDrawRafRef.current = requestAnimationFrame(step);
+    };
+
+    linkDrawRafRef.current = requestAnimationFrame(step);
+
+    return () => {
+      if (linkDrawRafRef.current !== null) {
+        cancelAnimationFrame(linkDrawRafRef.current);
+        linkDrawRafRef.current = null;
+      }
+    };
+  }, [isStyleReady, introFinished, isLinkReady]);
 
   // -------------------------------------------------------------------------
   // Camera controls
@@ -820,6 +1135,12 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
         orbitRafRef.current = null;
       }
     };
+  }, [isAutoOrbit]);
+
+  // Mirrored for checkpointCamera, which has to know whether a bearing change
+  // was the orbit's doing or the operator's.
+  useEffect(() => {
+    isAutoOrbitRef.current = isAutoOrbit;
   }, [isAutoOrbit]);
 
   const handleToggleAutoOrbit = useCallback(() => setIsAutoOrbit((prev) => !prev), []);
