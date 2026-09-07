@@ -22,8 +22,16 @@ import './index.css';
  * never starts and every worker-backed source hangs unloaded without raising
  * anything. `maplibreWorkerAssets` in vite.config.ts serves this path in both
  * dev and build; the full story is in the comment there.
+ *
+ * Built off BASE_URL rather than written as "/maplibre/...". Served from a
+ * sub-path, the absolute form resolved to the DOMAIN root, missed the file and
+ * got the SPA's index.html back with a 200 - and a module worker is refused
+ * under text/html. That failure takes the site link line with it and leaves
+ * the rest of the map looking fine, which is the hardest possible way to find
+ * it. BASE_URL is "/" unless `base` is set, so this is the same string as
+ * before at the root.
  */
-setWorkerUrl('/maplibre/maplibre-gl-worker.mjs');
+setWorkerUrl(`${import.meta.env.BASE_URL}maplibre/maplibre-gl-worker.mjs`);
 
 // Safely suppress harmless third-party browser extension errors (e.g., MetaMask, crypto wallet injects)
 if (typeof window !== 'undefined') {

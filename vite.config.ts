@@ -41,7 +41,11 @@ function maplibreWorkerAssets(): Plugin {
     // Dev: hand the two files straight off disk.
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        const file = MAPLIBRE_WORKER_FILES.find((f) => req.url?.split('?')[0] === routeFor(f));
+        // Matched on the tail rather than the whole path, so a configured
+        // `base` (which main.tsx prefixes onto the worker URL) still lands
+        // here instead of falling through to the SPA fallback.
+        const reqPath = req.url?.split('?')[0] ?? '';
+        const file = MAPLIBRE_WORKER_FILES.find((f) => reqPath.endsWith(routeFor(f)));
         if (!file) return next();
 
         // A module worker: the browser refuses it under any other MIME type,
