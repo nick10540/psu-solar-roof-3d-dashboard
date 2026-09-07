@@ -98,12 +98,28 @@ Open http://localhost:3001. Stop with `docker compose down`.
 | 1 | สุราษฎร์ธานี | *not provisioned* | — |
 | 2 | ภูเก็ต | *not provisioned* | — |
 | 3 | ตรัง | `4821237` | 999.36 kWp |
-| 4 | หาดใหญ่ | `4956359` | 1500 kWp |
+| 4 | หาดใหญ่ | `4956359`, `4956575`, `4956547` | 6411.82 kWp |
 | 5 | ปัตตานี | `4947126` | 1522.08 kWp |
 
 Sites 1 and 2 have no SolarEdge site ID yet. They are deliberately left unbound:
 in live mode their pins read "ไม่มีข้อมูล" rather than showing a plausible
 invented figure. In mock mode they display simulated data like the others.
+
+หาดใหญ่'s array is split across **three** SolarEdge registrations:
+
+| Site ID | Registration | Registered |
+| --- | --- | --- |
+| `4956359` | วิทยาเขตหาดใหญ่ | 1500 kWp |
+| `4956575` | ศูนย์พัฒนายานยนต์ไฟฟ้า | 46.08 kWp |
+| `4956547` | อุทยานวิทยาศาสตร์ | 221.76 kWp |
+
+A pin may aggregate up to `MAX_SITE_IDS_PER_BUILDING` (3) of them, and every
+figure it shows — power, energy, CO2 — is the sum across them. The default
+binding lives in `src/services/solarEdgeService.ts` (`HATYAI_SITE_IDS`); an
+operator can override it per pin from the binding modal, and that choice
+persists in localStorage. The capacity the board prints is still the commissioned
+6411.82 kWp from `src/config/siteCapacity.ts`, not the 1767.84 kWp these three
+register between them — the rest of the array is not readable through the API.
 
 ## Security
 

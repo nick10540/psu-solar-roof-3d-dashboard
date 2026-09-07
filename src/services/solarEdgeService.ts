@@ -23,7 +23,8 @@
  * 5. AbortSignal support so an in-flight poll can be cancelled on unmount
  *
  * Live sites (ภูเก็ต has no site ID yet and stays unbound):
- *   4956359 หาดใหญ่ | 4821237 ตรัง | 4947126 ปัตตานี | 4817295 สุราษฎร์ธานี
+ *   4956359 + 4956575 + 4956547 หาดใหญ่ (three registrations, summed)
+ *   4821237 ตรัง | 4947126 ปัตตานี | 4817295 สุราษฎร์ธานี
  */
 
 import {
@@ -208,6 +209,18 @@ export const LIVE_SITE_IDS = {
   PATTANI: 4947126,
   SURAT: 4817295,
 } as const;
+
+/**
+ * หาดใหญ่'s three SolarEdge registrations, in binding-modal field order.
+ *
+ * The campus array is split across three registrations, so a pin bound to
+ * 4956359 alone reads only the first slice of it — 1500 of the 6411.82 kWp
+ * recorded in siteCapacity.ts. All three are summed into the one pin.
+ *
+ * Order is load-bearing: index 0 is ID 1, the "primary" the legacy single-ID
+ * field points at and the one `resolveSiteMetrics` reads a site name from.
+ */
+export const HATYAI_SITE_IDS: readonly number[] = [LIVE_SITE_IDS.HATYAI, 4956575, 4956547];
 
 // 5 MEA Solar Roof Regional Sites for Demo / Mock Mode & API Ready
 export const MOCK_SOLAREDGE_SITES: SolarEdgeRawSite[] = [
@@ -965,6 +978,53 @@ export async function fetchBackendHealth(
 // -------------------------------------------------------------
 // Part 3: Building ↔ Site Mapping Persistence
 // -------------------------------------------------------------
+
+/** The dashboard building id หาดใหญ่ occupies. */
+const HATYAI_BUILDING_ID = 4;
+
+/**
+ * One-time upgrade of an already-saved หาดใหญ่ binding to all three IDs.
+ *
+ * Every kiosk that has run a previous build already has a v5 binding map in
+ * localStorage, so changing the SEED above reaches new machines only — the
+ * board in the room would keep reading 4956359 alone and the other two thirds
+ * of the campus would stay invisible.
+ *
+ * Bumping the storage key would fix that by discarding the whole map, including
+ * any IDs an operator typed into other pins by hand. This is narrower: it fires
+ * only when หาดใหญ่ still points at exactly the old single ID, which is the
+ * one state that can only have come from the old default.
+ *
+ * The marker key is what makes it one-time rather than sticky. Without it an
+ * operator who deliberately narrowed หาดใหญ่ back to 4956359 would find the
+ * other two re-added on the next reload, with no way to say no.
+ */
+const STORAGE_KEY_HATYAI_TRIO = 'mea_solar_hatyai_trio_migrated_v1';
+
+function migrateHatyaiTrio(
+  bindings: Record<number, BuildingSiteBinding>
+): Record<number, BuildingSiteBinding> {
+  try {
+    if (localStorage.getItem(STORAGE_KEY_HATYAI_TRIO)) return bindings;
+    localStorage.setItem(STORAGE_KEY_HATYAI_TRIO, '1');
+
+    const existing = bindings[HATYAI_BUILDING_ID];
+    const ids = bindingSiteIds(existing);
+    if (!existing || ids.length !== 1 || ids[0] !== LIVE_SITE_IDS.HATYAI) return bindings;
+
+    bindings[HATYAI_BUILDING_ID] = {
+      ...existing,
+      siteId: HATYAI_SITE_IDS[0],
+      siteIds: [...HATYAI_SITE_IDS],
+    };
+    localStorage.setItem(STORAGE_KEY_BINDINGS, JSON.stringify(bindings));
+  } catch {
+    // A wedged or full localStorage must not take the bindings down with it —
+    // the in-memory map is still correct for this session either way.
+  }
+  return bindings;
+}
+
 export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_BINDINGS);
@@ -983,12 +1043,14 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
       const now = new Date().toISOString();
       const seed = (
         buildingId: number,
-        siteId: number,
+        siteIds: readonly number[],
         siteName: string
       ): BuildingSiteBinding => ({
         buildingId,
-        siteId,
-        siteIds: [siteId],
+        // The legacy single-ID field keeps pointing at the primary, so an older
+        // build rolled back onto this storage still reads something sensible.
+        siteId: siteIds[0],
+        siteIds: [...siteIds],
         siteName,
         primaryMetric: 'currentPower',
         isBound: true,
@@ -996,10 +1058,10 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
       });
 
       return {
-        1: seed(1, LIVE_SITE_IDS.SURAT, 'MEA Solar Roof - สุราษฎร์ธานี'),
-        3: seed(3, LIVE_SITE_IDS.TRANG, 'MEA Solar Roof - ตรัง'),
-        4: seed(4, LIVE_SITE_IDS.HATYAI, 'MEA Solar Roof - หาดใหญ่'),
-        5: seed(5, LIVE_SITE_IDS.PATTANI, 'MEA Solar Roof - ปัตตานี'),
+        1: seed(1, [LIVE_SITE_IDS.SURAT], 'MEA Solar Roof - สุราษฎร์ธานี'),
+        3: seed(3, [LIVE_SITE_IDS.TRANG], 'MEA Solar Roof - ตรัง'),
+        4: seed(4, HATYAI_SITE_IDS, 'MEA Solar Roof - หาดใหญ่'),
+        5: seed(5, [LIVE_SITE_IDS.PATTANI], 'MEA Solar Roof - ปัตตานี'),
       };
     }
 
@@ -1013,7 +1075,7 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
         b.siteIds = b.siteId != null ? [b.siteId] : [];
       }
     }
-    return parsed;
+    return migrateHatyaiTrio(parsed);
   } catch {
     return {};
   }

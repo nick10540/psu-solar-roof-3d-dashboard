@@ -80,7 +80,9 @@ export interface IntroVideoConfig {
 }
 
 export const INTRO_VIDEO: IntroVideoConfig = {
-  enabled: true,
+  // Off at the operator's request: the dashboard comes straight up. Everything
+  // below is left as it was so flipping this back restores the intro exactly.
+  enabled: false,
   src: '/1.mp4',
   withSound: true,
   playbackRate: 1,

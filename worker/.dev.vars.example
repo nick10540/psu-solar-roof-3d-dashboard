@@ -6,8 +6,9 @@
 SOLAREDGE_API_KEY=
 
 # Site IDs the backend is allowed to read.
-#   4956359 = หาดใหญ่ | 4821237 = ตรัง | 4947126 = ปัตตานี | 4817295 = สุราษฎร์ธานี
-SOLAREDGE_SITE_IDS=4956359,4821237,4947126,4817295
+#   4956359 + 4956575 + 4956547 = หาดใหญ่ (three registrations, summed on one pin)
+#   4821237 = ตรัง | 4947126 = ปัตตานี | 4817295 = สุราษฎร์ธานี
+SOLAREDGE_SITE_IDS=4956359,4956575,4956547,4821237,4947126,4817295
 
 SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
 
@@ -17,8 +18,9 @@ SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
 # backend WAITS rather than bursting past it, so setting this above what the
 # account really allows does not buy throughput — it just moves the refusal
 # upstream, where it arrives as a 429 on whichever site happens to be last in
-# the list. At 50 even the 10-second floor fits: four sites want 24/min for the
-# live reading plus 1/min for the fixed series group.
+# the list. At 50 even the 10-second floor still fits, but not by much: the six
+# registrations above want 36/min for the live reading plus ~1.6/min for the
+# fixed series group.
 SOLAREDGE_MAX_CALLS_PER_MIN=50
 
 # PER MONTH: 100000 so the configurable intervals have room to run. A guard
@@ -27,9 +29,12 @@ SOLAREDGE_MAX_CALLS_PER_MIN=50
 # to the real allowance to have the guard (which serves cache instead of
 # failing) come first.
 #
-# With the per-minute ceiling at 50 this is the tighter limit by far: four
-# sites at the 10 s floor spend ~36k/day, so 100000 lasts under three days. At
-# the 300 s default it is ~2.7k/day and the budget is untouchable. The settings
+# With the per-minute ceiling at 50 this is the tighter limit by far, and since
+# หาดใหญ่ became three registrations it BINDS AT THE DEFAULT CADENCE: six sites
+# at 300 s spend ~4k/day, i.e. ~121k in a 30-day month against a 100k guard, so
+# the last few days of the month serve cache instead of fetching. Either raise
+# this to the account's real allowance or ease SOLAREDGE_POWER_FLOW_INTERVAL_SEC
+# to ~450. (At the 10 s floor it is ~54k/day — under two days.) The settings
 # panel does that arithmetic live — calls/min, /day and /month for the sites
 # actually on screen — so check it there after changing the interval.
 SOLAREDGE_MONTHLY_CALL_BUDGET=100000

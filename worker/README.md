@@ -66,7 +66,7 @@ CORS never enters the picture.
 | Variable | Notes |
 | --- | --- |
 | `SOLAREDGE_API_KEY` | Required. Secret — never commit, never place under `public/`. |
-| `SOLAREDGE_SITE_IDS` | `4956359,4821237,4947126`. Narrows the registry in `src/config.ts`. |
+| `SOLAREDGE_SITE_IDS` | `4956359,4956575,4956547,4821237,4947126`. Narrows the registry in `src/config.ts`. |
 | `SOLAREDGE_API_BASE` | Default `https://monitoringapi.solaredge.com/v2`. |
 | `ALLOWED_ORIGINS` | CORS allow-list. Leave empty when same-origin. |
 | `PORT` | Node adapter only. Default `8787`. |
@@ -81,14 +81,21 @@ than putting it in `wrangler.toml`.
 | 1 | สุราษฎร์ธานี | `4817295` | 650.88 kWp |
 | 3 | ตรัง | `4821237` | 999.36 kWp |
 | 4 | หาดใหญ่ | `4956359` | 1500 kWp |
+| 4 | หาดใหญ่ — ศูนย์พัฒนายานยนต์ไฟฟ้า | `4956575` | 46.08 kWp |
+| 4 | หาดใหญ่ — อุทยานวิทยาศาสตร์ | `4956547` | 221.76 kWp |
 | 5 | ปัตตานี | `4947126` | 1522.08 kWp |
 | 2 | ภูเก็ต | *not provisioned* | — |
 
-Capacities come from the API. ภูเก็ต has no site ID yet, so it stays unbound and
-renders as "ไม่มีข้อมูล" in live mode rather than borrowing a neighbour's
-figures. When its ID is issued, add it to `SITE_REGISTRY` in `src/config.ts`, to
-`SOLAREDGE_SITE_IDS`, and to the default bindings in
-`src/services/solarEdgeService.ts`.
+Capacities come from the API. This backend fetches **site IDs** and knows
+nothing about the campus grouping: หาดใหญ่'s three registrations are peers here,
+and it is the dashboard that binds all three to building 4 and sums them.
+Registering another one is two edits — `SITE_REGISTRY` in `src/config.ts` and
+`SOLAREDGE_SITE_IDS` — plus the pin's binding on the frontend.
+
+ภูเก็ต has no site ID yet, so it stays unbound and renders as "ไม่มีข้อมูล" in
+live mode rather than borrowing a neighbour's figures. When its ID is issued,
+add it to `SITE_REGISTRY` in `src/config.ts`, to `SOLAREDGE_SITE_IDS`, and to
+the default bindings in `src/services/solarEdgeService.ts`.
 
 สุราษฎร์ธานี reports `city: "Hat Yai", state: "Changwat Songkhla"` in its site
 metadata, unlike the other three whose cities match their names. Treat the

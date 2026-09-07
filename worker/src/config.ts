@@ -81,18 +81,22 @@ export const DEFAULT_API_BASE = 'https://monitoringapi.solaredge.com/v2';
  * last in the list, which reads on a 72" screen as "that campus is broken"
  * rather than "we asked too fast". Sequential fetching alone does not fix
  * that; the burst has to actually wait, which is what `reserveUpstreamSlot`
- * does. At 50 the 30-second floor finally fits: four sites at 30 s on both
- * knobs want 32/min, and even six sites stay under.
+ * does. At 50 even the 10-second floor fits: the six registrations in
+ * SITE_REGISTRY want 36/min for /power-flow plus ~1.6/min for the fixed series
+ * group. Registering a seventh is what would put this ceiling in play.
  *
  * Per MONTH: raised from the entry package's 2000 to 100000 at the operator's
- * request, so the configurable 30-second refresh intervals below have room to
- * run. Read both numbers as SPEND CEILINGS this backend holds itself to, not
- * as claims about the account — if the real allowance is lower, SolarEdge
- * answers 429 long before either guard fires.
+ * request, so the configurable refresh interval below has room to run. Read
+ * both numbers as SPEND CEILINGS this backend holds itself to, not as claims
+ * about the account — if the real allowance is lower, SolarEdge answers 429
+ * long before either guard fires.
  *
- * The MONTHLY figure is the binding constraint again: four sites at the 30 s
- * floor spend ~46k/day, so 100000 lasts about two days. The settings panel
- * puts that arithmetic on screen rather than leaving it to be discovered.
+ * The MONTHLY figure is the binding constraint, and since หาดใหญ่ became three
+ * registrations it binds at the DEFAULT cadence rather than only at the floor:
+ * six sites at 300 s spend ~4k/day, so 100000 runs out a few days short of a
+ * 30-day month and the rest of it is served from cache. Six sites at the 10 s
+ * floor spend ~54k/day — under two days. The settings panel puts that
+ * arithmetic on screen rather than leaving it to be discovered.
  */
 export const DEFAULT_MAX_CALLS_PER_MIN = 50;
 export const DEFAULT_MONTHLY_CALL_BUDGET = 100000;
@@ -188,18 +192,29 @@ export interface SiteDescriptor {
 }
 
 /**
- * The four live sites.
+ * The six live registrations, across four campuses.
+ *
+ * หาดใหญ่ owns three of them: its array is split across separate SolarEdge
+ * registrations, and the dashboard binds all three to the one pin and sums
+ * them. The backend does not know about that grouping — it fetches site IDs —
+ * so they are listed here as peers and only the fallback name says which
+ * campus they belong to.
  *
  * ภูเก็ต is intentionally absent: no site ID has been issued for it yet. It
  * stays unbound on the dashboard and renders as "ไม่มีข้อมูล" rather than
  * borrowing a neighbour's numbers. Add it here when its ID exists and it
  * lights up with no other change.
  *
- * The fallback capacities are only used if the API cannot be reached — the
- * real values (1500 / 999.36 / 1522.08 / 650.88 kWp) come from /sites/{id}.
+ * The fallback capacities are only used if the API cannot be reached — the real
+ * values below were read from /sites/{id} on 2026-09-07. Note that the three
+ * หาดใหญ่ registrations REGISTER 1767.84 kWp between them against the 6411.82
+ * commissioned in src/config/siteCapacity.ts, which is the figure the board
+ * prints; the gap is the part of the array that is still not readable.
  */
 export const SITE_REGISTRY: SiteDescriptor[] = [
   { siteId: 4956359, fallbackName: 'MEA Solar Roof - หาดใหญ่', fallbackPeakPowerKwp: 1500.0, fallbackCity: 'หาดใหญ่' },
+  { siteId: 4956575, fallbackName: 'MEA Solar Roof - หาดใหญ่ (ศูนย์พัฒนายานยนต์ไฟฟ้า)', fallbackPeakPowerKwp: 46.08, fallbackCity: 'หาดใหญ่' },
+  { siteId: 4956547, fallbackName: 'MEA Solar Roof - หาดใหญ่ (อุทยานวิทยาศาสตร์)', fallbackPeakPowerKwp: 221.76, fallbackCity: 'หาดใหญ่' },
   { siteId: 4821237, fallbackName: 'MEA Solar Roof - ตรัง', fallbackPeakPowerKwp: 999.36, fallbackCity: 'ตรัง' },
   { siteId: 4947126, fallbackName: 'MEA Solar Roof - ปัตตานี', fallbackPeakPowerKwp: 1522.08, fallbackCity: 'ปัตตานี' },
   { siteId: 4817295, fallbackName: 'MEA Solar Roof - สุราษฎร์ธานี', fallbackPeakPowerKwp: 650.88, fallbackCity: 'สุราษฎร์ธานี' },

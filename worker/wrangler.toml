@@ -8,14 +8,17 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 SOLAREDGE_API_BASE = "https://monitoringapi.solaredge.com/v2"
-SOLAREDGE_SITE_IDS = "4956359,4821237,4947126"
+# หาดใหญ่ is three registrations (4956359 + 4956575 + 4956547), summed onto one
+# pin by the dashboard; ตรัง and ปัตตานี are one each.
+SOLAREDGE_SITE_IDS = "4956359,4956575,4956547,4821237,4947126"
 ALLOWED_ORIGINS = "http://localhost:3000"
 
 # Spend ceilings. Per-minute matches the upgraded package (50, was 10) and the
 # backend waits rather than bursting past it — setting it higher than the
 # account allows only moves the refusal upstream. The monthly figure is a guard
-# against silent overspend, and at 50/min it is the tighter of the two: four
-# sites at the 30s interval floor spend ~46k/day.
+# against silent overspend, and at 50/min it is the tighter of the two: the five
+# registrations above spend ~3.4k/day at the 300 s default, ~101k in a 30-day
+# month, so this guard is right on the edge. See worker/.dev.vars.example.
 SOLAREDGE_MAX_CALLS_PER_MIN = "50"
 SOLAREDGE_MONTHLY_CALL_BUDGET = "100000"
 

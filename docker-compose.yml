@@ -29,7 +29,9 @@ services:
     restart: unless-stopped
     environment:
       SOLAREDGE_API_KEY: ${SOLAREDGE_API_KEY:?set SOLAREDGE_API_KEY in .env}
-      SOLAREDGE_SITE_IDS: ${SOLAREDGE_SITE_IDS:-4956359,4821237,4947126}
+      # หาดใหญ่ is three registrations (4956359 + 4956575 + 4956547), summed
+      # onto one pin by the dashboard.
+      SOLAREDGE_SITE_IDS: ${SOLAREDGE_SITE_IDS:-4956359,4956575,4956547,4821237,4947126}
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8787/api/solaredge/health"]
       interval: 30s
