@@ -40,7 +40,8 @@ import {
   SiteRefreshIntervals,
   DEFAULT_REFRESH_INTERVALS,
   clampRefreshIntervalSec,
-  MIN_REFRESH_INTERVAL_SEC
+  MIN_REFRESH_INTERVAL_SEC,
+  SERIES_INTERVAL_SEC
 } from '../types';
 import { INITIAL_SOLAREDGE_CONFIG } from '../data/mockSolarData';
 
@@ -66,18 +67,23 @@ const DAILY_QUOTA_LIMIT = 300; // SolarEdge daily request limit policy
  * per-endpoint TTLs own that, and they are shared across every tab. All this
  * has to do is stop a double render or a rapid remount re-requesting.
  */
-let clientCacheTtlMs = DEFAULT_REFRESH_INTERVALS.powerSec * 1000 * 0.9;
+let clientCacheTtlMs = DEFAULT_REFRESH_INTERVALS.powerFlowSec * 1000 * 0.9;
 
-/** The shortest interval any site is configured for, in seconds. */
+/**
+ * The shortest interval any site is configured for, in seconds.
+ *
+ * Only the power-flow cadence is a candidate now. The quarter-hour series are
+ * pinned server-side at SERIES_INTERVAL_SEC and the browser never has to tick
+ * for them: whatever poll lands after their 15 minutes are up picks the new
+ * buckets up on its way past.
+ */
 export function fastestIntervalSec(config: SolarEdgeConfig): number {
   const candidates: number[] = [
-    config.refreshIntervals?.powerSec ?? DEFAULT_REFRESH_INTERVALS.powerSec,
-    config.refreshIntervals?.energySec ?? DEFAULT_REFRESH_INTERVALS.energySec,
+    config.refreshIntervals?.powerFlowSec ?? DEFAULT_REFRESH_INTERVALS.powerFlowSec,
   ];
 
   for (const entry of Object.values(config.siteRefreshIntervals ?? {})) {
-    if (entry?.powerSec) candidates.push(entry.powerSec);
-    if (entry?.energySec) candidates.push(entry.energySec);
+    if (entry?.powerFlowSec) candidates.push(entry.powerFlowSec);
   }
 
   return Math.max(MIN_REFRESH_INTERVAL_SEC, Math.min(...candidates));
@@ -93,8 +99,7 @@ export function resolveSiteIntervals(
   if (!override) return base;
 
   return {
-    powerSec: clampRefreshIntervalSec(override.powerSec, base.powerSec),
-    energySec: clampRefreshIntervalSec(override.energySec, base.energySec),
+    powerFlowSec: clampRefreshIntervalSec(override.powerFlowSec, base.powerFlowSec),
   };
 }
 
@@ -705,11 +710,10 @@ export async function fetchSolarEdgeAccountData(
   // so a 30-second board is not held back by a TTL meant for a 5-minute one.
   if (refreshIntervals) {
     const fastest = Math.min(
-      refreshIntervals.powerSec,
-      refreshIntervals.energySec,
-      ...Object.values(siteRefreshIntervals ?? {}).flatMap((entry) =>
-        [entry?.powerSec, entry?.energySec].filter((n): n is number => !!n)
-      )
+      refreshIntervals.powerFlowSec,
+      ...Object.values(siteRefreshIntervals ?? {})
+        .map((entry) => entry?.powerFlowSec)
+        .filter((n): n is number => !!n)
     );
     clientCacheTtlMs = Math.max(MIN_REFRESH_INTERVAL_SEC, fastest) * 1000 * 0.9;
   }
@@ -775,13 +779,12 @@ export async function fetchSolarEdgeAccountData(
     // holds it in module memory, and on Cloudflare the isolate that serves the
     // next poll may never have seen the one that carried the setting.
     if (refreshIntervals) {
-      params.set('powerSec', String(refreshIntervals.powerSec));
-      params.set('energySec', String(refreshIntervals.energySec));
+      params.set('powerFlowSec', String(refreshIntervals.powerFlowSec));
     }
 
     const overrides = Object.entries(siteRefreshIntervals ?? {})
       .filter(([id]) => Number.isInteger(Number(id)) && Number(id) > 0)
-      .map(([id, iv]) => `${id}:${iv.powerSec}:${iv.energySec}`);
+      .map(([id, iv]) => `${id}:${iv.powerFlowSec}`);
     if (overrides.length > 0) params.set('siteIntervals', overrides.join(','));
 
     const query = params.toString();
@@ -920,8 +923,8 @@ export async function fetchBackendHealth(
       monthlyCallBudget?: number;
       minRefreshIntervalSec?: number;
       maxRefreshIntervalSec?: number;
-      defaultPowerIntervalSec?: number;
-      defaultEnergyIntervalSec?: number;
+      defaultPowerFlowIntervalSec?: number;
+      seriesIntervalSec?: number;
     };
 
     if (!res.ok || body.ok !== true) {
@@ -938,10 +941,9 @@ export async function fetchBackendHealth(
             monthlyCallBudget: body.monthlyCallBudget,
             minRefreshIntervalSec: body.minRefreshIntervalSec ?? MIN_REFRESH_INTERVAL_SEC,
             maxRefreshIntervalSec: body.maxRefreshIntervalSec ?? 86400,
-            defaultPowerIntervalSec:
-              body.defaultPowerIntervalSec ?? DEFAULT_REFRESH_INTERVALS.powerSec,
-            defaultEnergyIntervalSec:
-              body.defaultEnergyIntervalSec ?? DEFAULT_REFRESH_INTERVALS.energySec,
+            defaultPowerFlowIntervalSec:
+              body.defaultPowerFlowIntervalSec ?? DEFAULT_REFRESH_INTERVALS.powerFlowSec,
+            seriesIntervalSec: body.seriesIntervalSec ?? SERIES_INTERVAL_SEC,
           }
         : null;
 
@@ -1091,12 +1093,26 @@ export function saveSolarEdgeConfig(config: SolarEdgeConfig): void {
  * would have this board asking SolarEdge for four sites every second. The
  * backend clamps too; this is so the settings panel and the poll timer agree
  * with what the backend will actually do.
+ *
+ * Also where the two-knob era is migrated. A kiosk that has been running since
+ * before /power-flow holds `{powerSec, energySec}`; its `powerSec` was the
+ * live cadence, so it carries straight over to `powerFlowSec` and the operator
+ * keeps the tempo they chose. `energySec` is dropped — the series it governed
+ * are fixed at SERIES_INTERVAL_SEC now.
  */
 function normaliseRefreshConfig(config: SolarEdgeConfig): SolarEdgeConfig {
+  /** The live cadence out of a stored entry of either vintage. */
+  const liveSecOf = (entry: unknown): unknown => {
+    const legacy = entry as { powerFlowSec?: unknown; powerSec?: unknown } | null | undefined;
+    return legacy?.powerFlowSec ?? legacy?.powerSec;
+  };
+
   const base = config.refreshIntervals ?? DEFAULT_REFRESH_INTERVALS;
   const refreshIntervals: SiteRefreshIntervals = {
-    powerSec: clampRefreshIntervalSec(base.powerSec, DEFAULT_REFRESH_INTERVALS.powerSec),
-    energySec: clampRefreshIntervalSec(base.energySec, DEFAULT_REFRESH_INTERVALS.energySec),
+    powerFlowSec: clampRefreshIntervalSec(
+      liveSecOf(base),
+      DEFAULT_REFRESH_INTERVALS.powerFlowSec
+    ),
   };
 
   const siteRefreshIntervals: Record<string, SiteRefreshIntervals> = {};
@@ -1104,8 +1120,7 @@ function normaliseRefreshConfig(config: SolarEdgeConfig): SolarEdgeConfig {
     const siteId = Number(id);
     if (!Number.isInteger(siteId) || siteId <= 0 || !entry) continue;
     siteRefreshIntervals[id] = {
-      powerSec: clampRefreshIntervalSec(entry.powerSec, refreshIntervals.powerSec),
-      energySec: clampRefreshIntervalSec(entry.energySec, refreshIntervals.energySec),
+      powerFlowSec: clampRefreshIntervalSec(liveSecOf(entry), refreshIntervals.powerFlowSec),
     };
   }
 

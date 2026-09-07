@@ -14,11 +14,12 @@
  *   refresh=1              bypass the live pair's TTL (a page load wanting
  *                          numbers now). Leaves the slow totals cached.
  *   sites=<id>,<id>        the site IDs the dashboard actually has on screen
- *   powerSec=<n>           default seconds between /power + today's /energy
- *   energySec=<n>          default seconds between the totals + CO2 calls
- *   siteIntervals=         per-site overrides, "<id>:<powerSec>:<energySec>"
- *     4956359:30:600,...   repeated comma-separated. Either number may be
- *                          blank to inherit the default above.
+ *   powerFlowSec=<n>       default seconds between /power-flow calls. The one
+ *                          cadence there is: the quarter-hour series run at a
+ *                          fixed SERIES_INTERVAL_SEC and take no parameter.
+ *   siteIntervals=         per-site overrides, "<id>:<powerFlowSec>"
+ *     4956359:30,...       repeated comma-separated. A blank number inherits
+ *                          the default above.
  *
  * Every interval is clamped server-side to [MIN, MAX]_REFRESH_INTERVAL_SEC —
  * these are hints from the browser, not instructions.
@@ -29,6 +30,7 @@ import {
   MAX_REFRESH_INTERVAL_SEC,
   MIN_REFRESH_INTERVAL_SEC,
   resolveConfig,
+  SERIES_INTERVAL_SEC,
   withRefreshIntervals,
   withRequestedSites,
   WorkerEnv,
@@ -71,22 +73,26 @@ function json(body: unknown, status: number, extraHeaders: Record<string, string
 }
 
 /**
- * Parse `siteIntervals=<id>:<powerSec>:<energySec>,...`.
+ * Parse `siteIntervals=<id>:<powerFlowSec>,...`.
  *
  * A malformed entry is skipped rather than failing the whole request: the
- * fallback is the global cadence, which is a working board. Blank numbers mean
- * "inherit", so `4956359:30:` sets only the live interval for that site, and
+ * fallback is the global cadence, which is a working board. A blank number
+ * means "inherit", so `4956359:` sets nothing for that site, and
  * `clampIntervalSec` in config.ts is what enforces the floor on whatever
  * survives this.
+ *
+ * A trailing third field from the old "<id>:<powerSec>:<energySec>" spelling is
+ * ignored rather than rejected, so a kiosk whose localStorage still holds the
+ * old shape keeps working instead of falling back to the default cadence.
  */
 function parseSiteIntervals(
   raw: string
-): Array<{ siteId: number; powerSec?: number; energySec?: number }> {
-  const out: Array<{ siteId: number; powerSec?: number; energySec?: number }> = [];
+): Array<{ siteId: number; powerFlowSec?: number }> {
+  const out: Array<{ siteId: number; powerFlowSec?: number }> = [];
   if (!raw) return out;
 
   for (const chunk of raw.split(',')) {
-    const [idPart, powerPart, energyPart] = chunk.split(':');
+    const [idPart, powerPart] = chunk.split(':');
     const siteId = Number((idPart || '').trim());
     if (!Number.isInteger(siteId) || siteId <= 0) continue;
 
@@ -95,7 +101,7 @@ function parseSiteIntervals(
       return Number.isFinite(n) && n > 0 ? n : undefined;
     };
 
-    out.push({ siteId, powerSec: asSec(powerPart), energySec: asSec(energyPart) });
+    out.push({ siteId, powerFlowSec: asSec(powerPart) });
     // Same hard cap as withRequestedSites: a crafted query string must not be
     // able to make this backend fan out across hundreds of sites.
     if (out.length >= 24) break;
@@ -150,8 +156,9 @@ export async function handleRequest(request: Request, env: WorkerEnv): Promise<R
         // The cadence a bare request would get, plus the bounds the backend
         // clamps to, so the settings panel can show the real numbers instead
         // of assuming its own defaults took effect.
-        defaultPowerIntervalSec: cfg.refreshIntervals.powerSec,
-        defaultEnergyIntervalSec: cfg.refreshIntervals.energySec,
+        defaultPowerFlowIntervalSec: cfg.refreshIntervals.powerFlowSec,
+        /** Fixed, not a default — the settings panel shows it as a fact. */
+        seriesIntervalSec: SERIES_INTERVAL_SEC,
         minRefreshIntervalSec: MIN_REFRESH_INTERVAL_SEC,
         maxRefreshIntervalSec: MAX_REFRESH_INTERVAL_SEC,
       },
@@ -175,8 +182,10 @@ export async function handleRequest(request: Request, env: WorkerEnv): Promise<R
     // The browser owns the cadence, this backend owns the floor. Absent
     // parameters leave the env-resolved default in place.
     const effective = withRefreshIntervals(scoped, {
-      powerSec: url.searchParams.get('powerSec') ?? undefined,
-      energySec: url.searchParams.get('energySec') ?? undefined,
+      // `powerSec` accepted as an alias so a cached bundle of the old frontend
+      // does not silently lose its cadence mid-ceremony.
+      powerFlowSec:
+        url.searchParams.get('powerFlowSec') ?? url.searchParams.get('powerSec') ?? undefined,
       perSite: parseSiteIntervals(url.searchParams.get('siteIntervals') || ''),
     });
 

@@ -51,6 +51,14 @@ export interface WorkerEnv {
    * a bare `GET /api/solaredge/overview` — a curl check, a health probe, or a
    * kiosk whose localStorage has been wiped. Floored at MIN_REFRESH_INTERVAL_SEC.
    */
+  SOLAREDGE_POWER_FLOW_INTERVAL_SEC?: string;
+  /**
+   * The pre-rename spelling, still read as a fallback.
+   *
+   * `SOLAREDGE_ENERGY_INTERVAL_SEC` is accepted by the type and ignored by the
+   * code: the series group is fixed at SERIES_INTERVAL_SEC now, and a .dev.vars
+   * that still sets it must load rather than fail.
+   */
   SOLAREDGE_POWER_INTERVAL_SEC?: string;
   SOLAREDGE_ENERGY_INTERVAL_SEC?: string;
 
@@ -99,41 +107,59 @@ export const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 // the TTLs below decide which endpoints are due. That is what stops a second
 // tab, an F5, or a colleague's laptop from multiplying the spend.
 //
-// The split is "what is happening now" vs. "what has accumulated", because
-// those are the two pairs that cost 2 upstream calls each — and grouping them
-// this way makes the DEFAULT cadence byte-for-byte what the board did before
-// the knob existed (power+today every 5 min, totals every 30 min):
+// There is ONE knob, and it governs the one endpoint whose answer actually
+// changes faster than the operator can ask for it:
 //
-//   powerSec  -> /sites/{id}/power        + /sites/{id}/energy   (today)
-//   energySec -> /sites/{id}/energy?MONTH + /sites/{id}/environmental-benefits
+//   powerFlowSec -> /sites/{id}/power-flow                       (live kW)
+//   FIXED 900 s  -> /power, /energy today, /energy?MONTH, CO2    (quarter-hour)
+//
+// The split used to be "what is happening now" vs. "what has accumulated",
+// with a knob on each. That was the right shape when the live figure came from
+// the /power series — but that series is quarter-hourly, so the fast knob was
+// selling a freshness it could not deliver. With the live reading now coming
+// from /power-flow, everything else is pinned to the fifteen minutes it moves
+// in and only the one genuinely tunable thing is left adjustable.
 // ---------------------------------------------------------------------------
 
 /**
- * Floor for both intervals.
+ * Floor for the one remaining interval.
  *
- * Enforced here as well as in the settings UI: a hand-edited localStorage
- * entry or a crafted query string must not be able to ask this backend to
- * hammer SolarEdge every second.
+ * 10 s, down from 30, because the only thing still on a knob is /power-flow —
+ * a single call returning a figure SolarEdge itself refreshes every 3 seconds.
+ * The old 30 covered endpoints that could not answer faster than 15 minutes no
+ * matter how often they were asked; those are fixed at SERIES_INTERVAL_SEC now
+ * and no longer need protecting from an impatient operator.
+ *
+ * Enforced here as well as in the settings UI: a hand-edited localStorage entry
+ * or a crafted query string must not be able to ask this backend to hammer
+ * SolarEdge every second.
  */
-export const MIN_REFRESH_INTERVAL_SEC = 30;
+export const MIN_REFRESH_INTERVAL_SEC = 10;
 
 /** A day. Anything slower is indistinguishable from "off" on a kiosk. */
 export const MAX_REFRESH_INTERVAL_SEC = 86400;
 
-/** Cadence when the client sends none — i.e. the pre-knob behaviour. */
-export const DEFAULT_POWER_INTERVAL_SEC = 300;
-export const DEFAULT_ENERGY_INTERVAL_SEC = 1800;
+/**
+ * The SERIES cadence, fixed rather than configured.
+ *
+ * /power, today's /energy, the month series and environmental-benefits are all
+ * QUARTER_HOUR data. The API refuses anything finer — ask for a bogus
+ * resolution and it answers "Valid resolutions are [QUARTER_HOUR, HOUR]" — so
+ * polling them faster than 15 minutes returns the same bucket again at the
+ * price of a call. Fixed at exactly the rate the data actually moves.
+ */
+export const SERIES_INTERVAL_SEC = 900;
+
+/** Cadence for /power-flow when the client sends none. */
+export const DEFAULT_POWER_FLOW_INTERVAL_SEC = 300;
 
 export interface RefreshIntervals {
-  /** Seconds between /power and today's /energy for one site. */
-  powerSec: number;
-  /** Seconds between the month-series and environmental-benefits calls. */
-  energySec: number;
+  /** Seconds between /power-flow calls for one site. */
+  powerFlowSec: number;
 }
 
 export const DEFAULT_REFRESH_INTERVALS: RefreshIntervals = {
-  powerSec: DEFAULT_POWER_INTERVAL_SEC,
-  energySec: DEFAULT_ENERGY_INTERVAL_SEC,
+  powerFlowSec: DEFAULT_POWER_FLOW_INTERVAL_SEC,
 };
 
 /** Clamp one interval into [MIN, MAX], falling back when unparseable. */
@@ -262,8 +288,14 @@ export function resolveConfig(env: WorkerEnv): ResolvedConfig {
       DEFAULT_MONTHLY_CALL_BUDGET
     ),
     refreshIntervals: {
-      powerSec: clampIntervalSec(env.SOLAREDGE_POWER_INTERVAL_SEC, DEFAULT_POWER_INTERVAL_SEC),
-      energySec: clampIntervalSec(env.SOLAREDGE_ENERGY_INTERVAL_SEC, DEFAULT_ENERGY_INTERVAL_SEC),
+      // SOLAREDGE_POWER_FLOW_INTERVAL_SEC, falling back to the retired
+      // SOLAREDGE_POWER_INTERVAL_SEC so an existing .dev.vars or compose file
+      // keeps working after the rename. SOLAREDGE_ENERGY_INTERVAL_SEC is read
+      // by nothing now — the series group is fixed at SERIES_INTERVAL_SEC.
+      powerFlowSec: clampIntervalSec(
+        env.SOLAREDGE_POWER_FLOW_INTERVAL_SEC ?? env.SOLAREDGE_POWER_INTERVAL_SEC,
+        DEFAULT_POWER_FLOW_INTERVAL_SEC
+      ),
     },
     siteIntervals: new Map(),
   };
@@ -272,30 +304,26 @@ export function resolveConfig(env: WorkerEnv): ResolvedConfig {
 /**
  * Overlay the cadence the browser asked for.
  *
- * Every value goes through `clampIntervalSec`, so no query string can get
- * below the 30-second floor however it is spelled. An absent or unparseable
- * field leaves the env-resolved default in place rather than snapping to the
- * floor — an operator who set only the power interval keeps the energy default.
+ * Every value goes through `clampIntervalSec`, so no query string can get below
+ * the floor however it is spelled. An absent or unparseable field leaves the
+ * env-resolved default in place rather than snapping to the floor.
  */
 export function withRefreshIntervals(
   cfg: ResolvedConfig,
   requested: {
-    powerSec?: unknown;
-    energySec?: unknown;
-    perSite?: Array<{ siteId: number; powerSec?: unknown; energySec?: unknown }>;
+    powerFlowSec?: unknown;
+    perSite?: Array<{ siteId: number; powerFlowSec?: unknown }>;
   }
 ): ResolvedConfig {
   const refreshIntervals: RefreshIntervals = {
-    powerSec: clampIntervalSec(requested.powerSec, cfg.refreshIntervals.powerSec),
-    energySec: clampIntervalSec(requested.energySec, cfg.refreshIntervals.energySec),
+    powerFlowSec: clampIntervalSec(requested.powerFlowSec, cfg.refreshIntervals.powerFlowSec),
   };
 
   const siteIntervals = new Map<number, RefreshIntervals>();
   for (const entry of requested.perSite ?? []) {
     if (!Number.isInteger(entry.siteId) || entry.siteId <= 0) continue;
     siteIntervals.set(entry.siteId, {
-      powerSec: clampIntervalSec(entry.powerSec, refreshIntervals.powerSec),
-      energySec: clampIntervalSec(entry.energySec, refreshIntervals.energySec),
+      powerFlowSec: clampIntervalSec(entry.powerFlowSec, refreshIntervals.powerFlowSec),
     });
   }
 

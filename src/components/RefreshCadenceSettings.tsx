@@ -24,6 +24,7 @@ import {
   SolarEdgeRawSite,
   MIN_REFRESH_INTERVAL_SEC,
   MAX_REFRESH_INTERVAL_SEC,
+  SERIES_INTERVAL_SEC,
   clampRefreshIntervalSec,
 } from '../types';
 import { Clock, Zap, Activity, AlertCircle, Sigma, RotateCcw } from 'lucide-react';
@@ -45,13 +46,20 @@ interface RefreshCadenceSettingsProps {
   }) => void;
 }
 
-/** Presets a gloved finger can hit on a kiosk. */
+/**
+ * Presets a gloved finger can hit on a kiosk.
+ *
+ * 10 วิ is the floor and it is genuinely usable now — one call per site per
+ * tick against a figure SolarEdge refreshes every three seconds. It is also
+ * the fastest way to spend the month's budget in a week, which is why the cost
+ * lines below sit directly under these buttons rather than further down.
+ */
 const PRESETS: Array<{ label: string; sec: number }> = [
+  { label: '10 วิ', sec: 10 },
   { label: '30 วิ', sec: 30 },
   { label: '1 นาที', sec: 60 },
   { label: '5 นาที', sec: 300 },
   { label: '15 นาที', sec: 900 },
-  { label: '30 นาที', sec: 1800 },
 ];
 
 /** "90 วิ" / "5 นาที" / "1.5 ชม." — whichever reads shortest. */
@@ -151,17 +159,17 @@ export const RefreshCadenceSettings: React.FC<RefreshCadenceSettingsProps> = ({
    * account list: an unbound site in the account costs nothing. Plus one
    * metadata call per site per day.
    *
-   * Per tick the POWER knob costs three calls (/power for the day's curve,
-   * /power-flow for the live kW, /energy for today) and the ENERGY knob two
-   * (/energy?MONTH and /environmental-benefits). The power figure was 2 until
-   * /power-flow was added — 60 s x 3 and 60 s x 2 are where the numerators
-   * come from.
+   * The knob costs ONE call per site per tick (/power-flow) — hence
+   * `60 / powerFlowSec`. The quarter-hour series add four more per site
+   * (/power, today's /energy, the month series, environmental-benefits) on a
+   * fixed SERIES_INTERVAL_SEC, which the operator cannot move and so is a
+   * constant here too.
    */
   const cost = useMemo(() => {
     let callsPerMin = 0;
     for (const siteId of activeSiteIds) {
       const iv = effectiveFor(siteId);
-      callsPerMin += 180 / iv.powerSec + 120 / iv.energySec;
+      callsPerMin += 60 / iv.powerFlowSec + (4 * 60) / SERIES_INTERVAL_SEC;
     }
 
     const perDay = callsPerMin * 60 * 24 + activeSiteIds.length;
@@ -193,18 +201,20 @@ export const RefreshCadenceSettings: React.FC<RefreshCadenceSettingsProps> = ({
             <div className="flex items-center gap-1.5">
               <Zap className="w-3 h-3 text-emerald-400 shrink-0" />
               <span className="text-[11px] font-semibold text-slate-200">
-                กำลังผลิต Real-time + พลังงานวันนี้
+                กำลังผลิต Real-time
               </span>
             </div>
             <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
-              <span className="font-mono">/power</span> +{' '}
-              <span className="font-mono">/energy</span> — 2 ครั้ง/ไซต์ ต่อรอบ
+              <span className="font-mono">/power-flow</span> — 1 ครั้ง/ไซต์ ต่อรอบ
+              <br />
+              SolarEdge รีเฟรชค่านี้ทุก 3 วินาที ตั้งได้ต่ำสุด{' '}
+              {limits?.minRefreshIntervalSec ?? MIN_REFRESH_INTERVAL_SEC} วิ
             </p>
           </div>
           <SecondsInput
-            value={intervals.powerSec}
-            fallback={intervals.powerSec}
-            onCommit={(sec) => setGlobal({ powerSec: sec })}
+            value={intervals.powerFlowSec}
+            fallback={intervals.powerFlowSec}
+            onCommit={(sec) => setGlobal({ powerFlowSec: sec })}
           />
         </div>
 
@@ -213,9 +223,9 @@ export const RefreshCadenceSettings: React.FC<RefreshCadenceSettingsProps> = ({
             <button
               key={`p-${preset.sec}`}
               type="button"
-              onClick={() => setGlobal({ powerSec: preset.sec })}
+              onClick={() => setGlobal({ powerFlowSec: preset.sec })}
               className={`px-2 py-0.5 rounded-lg text-[10px] font-mono border transition-colors cursor-pointer ${
-                intervals.powerSec === preset.sec
+                intervals.powerFlowSec === preset.sec
                   ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-200'
                   : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200'
               }`}
@@ -225,41 +235,29 @@ export const RefreshCadenceSettings: React.FC<RefreshCadenceSettingsProps> = ({
           ))}
         </div>
 
-        <div className="flex items-start justify-between gap-3 p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
+        {/* Fixed, not a knob — stated rather than offered. The endpoints behind
+            it are QUARTER_HOUR data and the API refuses anything finer, so a
+            dial here would only sell freshness it cannot deliver. */}
+        <div className="flex items-start justify-between gap-3 p-2.5 rounded-xl bg-slate-950/40 border border-slate-800/70">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <Sigma className="w-3 h-3 text-indigo-400 shrink-0" />
-              <span className="text-[11px] font-semibold text-slate-200">
-                พลังงานสะสม (เดือน / ปี / รวม) + CO₂
+              <span className="text-[11px] font-semibold text-slate-300">
+                พลังงานวันนี้ / สะสม + CO₂ + กราฟ
               </span>
             </div>
             <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
-              <span className="font-mono">/energy?MONTH</span> +{' '}
-              <span className="font-mono">/environmental-benefits</span> — 2 ครั้ง/ไซต์ ต่อรอบ
+              <span className="font-mono">/power</span> ·{' '}
+              <span className="font-mono">/energy</span> ·{' '}
+              <span className="font-mono">/energy?MONTH</span> ·{' '}
+              <span className="font-mono">/environmental-benefits</span> — 4 ครั้ง/ไซต์ ต่อรอบ
+              <br />
+              ข้อมูลชุดนี้เป็นราย 15 นาทีอยู่แล้ว ถามถี่กว่านี้ก็ได้ค่าเดิม
             </p>
           </div>
-          <SecondsInput
-            value={intervals.energySec}
-            fallback={intervals.energySec}
-            onCommit={(sec) => setGlobal({ energySec: sec })}
-          />
-        </div>
-
-        <div className="flex flex-wrap gap-1">
-          {PRESETS.map((preset) => (
-            <button
-              key={`e-${preset.sec}`}
-              type="button"
-              onClick={() => setGlobal({ energySec: preset.sec })}
-              className={`px-2 py-0.5 rounded-lg text-[10px] font-mono border transition-colors cursor-pointer ${
-                intervals.energySec === preset.sec
-                  ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200'
-                  : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {preset.label}
-            </button>
-          ))}
+          <span className="shrink-0 px-2 py-1 rounded-lg bg-slate-800/70 border border-slate-700 text-[11px] font-mono text-slate-300">
+            {humaniseSec(limits?.seriesIntervalSec ?? SERIES_INTERVAL_SEC)}
+          </span>
         </div>
       </div>
 
@@ -288,21 +286,16 @@ export const RefreshCadenceSettings: React.FC<RefreshCadenceSettingsProps> = ({
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium text-slate-200">{nameFor(siteId)}</div>
                   <div className="text-[9px] text-slate-500 font-mono">
-                    #{siteId} · {humaniseSec(iv.powerSec)} / {humaniseSec(iv.energySec)}
+                    #{siteId} · {humaniseSec(iv.powerFlowSec)}
                     {!hasOverride && ' (ค่าเริ่มต้น)'}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">
                   <SecondsInput
-                    value={iv.powerSec}
-                    fallback={intervals.powerSec}
-                    onCommit={(sec) => setOverride(siteId, { powerSec: sec })}
-                  />
-                  <SecondsInput
-                    value={iv.energySec}
-                    fallback={intervals.energySec}
-                    onCommit={(sec) => setOverride(siteId, { energySec: sec })}
+                    value={iv.powerFlowSec}
+                    fallback={intervals.powerFlowSec}
+                    onCommit={(sec) => setOverride(siteId, { powerFlowSec: sec })}
                   />
                   <button
                     type="button"

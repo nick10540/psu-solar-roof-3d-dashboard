@@ -17,8 +17,8 @@ SOLAREDGE_API_BASE=https://monitoringapi.solaredge.com/v2
 # backend WAITS rather than bursting past it, so setting this above what the
 # account really allows does not buy throughput — it just moves the refusal
 # upstream, where it arrives as a 429 on whichever site happens to be last in
-# the list. At 50 the 30-second interval floor fits: four sites at 30 s on both
-# knobs want 32/min, six sites 48/min.
+# the list. At 50 even the 10-second floor fits: four sites want 24/min for the
+# live reading plus 1/min for the fixed series group.
 SOLAREDGE_MAX_CALLS_PER_MIN=50
 
 # PER MONTH: 100000 so the configurable intervals have room to run. A guard
@@ -27,19 +27,27 @@ SOLAREDGE_MAX_CALLS_PER_MIN=50
 # to the real allowance to have the guard (which serves cache instead of
 # failing) come first.
 #
-# With the per-minute ceiling at 50 this is the tighter limit again: four sites
-# at the 30 s floor spend ~46k/day, so 100000 lasts about two days. The
-# settings panel does that arithmetic live — calls/min, /day and /month for the
-# sites actually on screen — so check it there after changing an interval.
+# With the per-minute ceiling at 50 this is the tighter limit by far: four
+# sites at the 10 s floor spend ~36k/day, so 100000 lasts under three days. At
+# the 300 s default it is ~2.7k/day and the budget is untouchable. The settings
+# panel does that arithmetic live — calls/min, /day and /month for the sites
+# actually on screen — so check it there after changing the interval.
 SOLAREDGE_MONTHLY_CALL_BUDGET=100000
 
 # Default cadence, in seconds, for a request that carries none of its own
 # (a curl check, or a kiosk whose localStorage was wiped). The dashboard sends
-# its own per-site values and those win. Floor is 30 either way.
-#   POWER  -> /power + /energy (today)
-#   ENERGY -> /energy?MONTH + /environmental-benefits
-SOLAREDGE_POWER_INTERVAL_SEC=300
-SOLAREDGE_ENERGY_INTERVAL_SEC=1800
+# its own per-site value and it wins. Floor is 10 either way.
+#
+# This is the ONLY cadence there is. It governs /power-flow, the instantaneous
+# PV reading, which SolarEdge itself refreshes every 3 seconds — so turning it
+# down really does put a newer number on the board. One call per site per tick.
+#
+# Everything else (/power, today's /energy, /energy?MONTH,
+# /environmental-benefits) is QUARTER_HOUR data — the API refuses anything
+# finer — and runs on a fixed 900 s that is not configurable. The old
+# SOLAREDGE_ENERGY_INTERVAL_SEC governed those and is now ignored;
+# SOLAREDGE_POWER_INTERVAL_SEC is still read as a fallback for the name below.
+SOLAREDGE_POWER_FLOW_INTERVAL_SEC=300
 
 # CORS allow-list. Leave empty for same-origin (behind the Vite/Nginx proxy).
 ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000

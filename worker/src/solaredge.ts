@@ -16,6 +16,7 @@ import {
   OVERVIEW_CACHE_TTL_MS,
   RATE_LIMIT_WINDOW_MS,
   ResolvedConfig,
+  SERIES_INTERVAL_SEC,
   SiteDescriptor,
 } from './config.js';
 
@@ -690,15 +691,16 @@ function readPowerFlow(raw: unknown): { pvKw: number | null; active: boolean } {
  * a rate limit must not blank out ตรัง, which is what a thrown error would do
  * to the loop that calls this.
  *
- * Cost per round: 0 when nothing is due, 3 when the live group is (power +
- * power-flow + today's energy), 2 more when the totals are. Site metadata is
- * one call a day and `forceRefresh` deliberately does not touch it — names do
- * not change.
+ * Cost per round: 1 when only the live reading is due (/power-flow), 4 more
+ * when the quarter-hour series are (/power, today's /energy, the month series,
+ * environmental-benefits). Site metadata is one call a day and `forceRefresh`
+ * deliberately does not touch it — names do not change.
  *
- * That live group was 2 until /power-flow was added for the instantaneous kW,
- * so a given cadence now costs 50% more on the power knob than it used to.
- * The settings panel does this arithmetic live for the sites actually bound —
- * check it there after changing an interval.
+ * Only the first of those is on a knob. The series group fires four times an
+ * hour whatever the operator sets, which is the whole reason the floor could
+ * come down to 10 s: turning the dial all the way now costs one call a tick,
+ * not three. The settings panel does this arithmetic live for the sites
+ * actually bound — check it there after changing the interval.
  */
 async function fetchOneSite(
   cfg: ResolvedConfig,
@@ -711,9 +713,14 @@ async function fetchOneSite(
   error?: SiteFetchError;
 }> {
   const siteId = desc.siteId;
-  const { powerSec, energySec } = intervalsForSite(cfg, siteId);
-  const liveTtlMs = powerSec * 1000;
-  const totalsTtlMs = energySec * 1000;
+  const { powerFlowSec } = intervalsForSite(cfg, siteId);
+  /** The one configurable cadence: how often the live kW is refetched. */
+  const flowTtlMs = powerFlowSec * 1000;
+  /**
+   * Everything quarter-hourly, pinned to the rate it actually advances at.
+   * Asking /power or /energy more often than this re-reads the same bucket.
+   */
+  const seriesTtlMs = SERIES_INTERVAL_SEC * 1000;
   const now = Date.now();
 
   const site = normaliseSite(desc, await loadSiteMeta(cfg, desc));
@@ -736,7 +743,7 @@ async function fetchOneSite(
   // development. Spreading them costs a little latency and buys headroom
   // that matters more.
   let power = powerCache.get(siteId);
-  if (forceRefresh || !power || now - power.storedAt >= liveTtlMs) {
+  if (forceRefresh || !power || now - power.storedAt >= seriesTtlMs) {
     try {
       const points = seriesPoints(await getJson<unknown>(cfg, siteId, `/sites/${siteId}/power`));
       power = {
@@ -772,7 +779,7 @@ async function fetchOneSite(
   // which are still quarter-hourly, and moving it to the power-flow clock would
   // date them by something they did not come from.
   let flow = powerFlowCache.get(siteId);
-  if (forceRefresh || !flow || now - flow.storedAt >= liveTtlMs) {
+  if (forceRefresh || !flow || now - flow.storedAt >= flowTtlMs) {
     try {
       const raw = await getJson<unknown>(cfg, siteId, `/sites/${siteId}/power-flow`);
       flow = { ...readPowerFlow(raw), storedAt: Date.now() };
@@ -785,7 +792,7 @@ async function fetchOneSite(
   }
 
   let energy = energyTodayCache.get(siteId);
-  if (forceRefresh || !energy || now - energy.storedAt >= liveTtlMs) {
+  if (forceRefresh || !energy || now - energy.storedAt >= seriesTtlMs) {
     try {
       const raw = await getJson<unknown>(cfg, siteId, `/sites/${siteId}/energy`);
       energy = { dailyWh: sumNonNull(seriesPoints(raw)), storedAt: Date.now() };
@@ -798,7 +805,7 @@ async function fetchOneSite(
   // --- accumulating totals: month / year / lifetime / CO2 ------------------
   let cold: ColdTotals | null = null;
   try {
-    cold = await loadColdTotals(cfg, siteId, site.installationDate, totalsTtlMs);
+    cold = await loadColdTotals(cfg, siteId, site.installationDate, seriesTtlMs);
   } catch (err) {
     note(err);
   }

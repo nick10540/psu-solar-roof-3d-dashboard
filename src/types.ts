@@ -283,50 +283,64 @@ export interface SolarEdgeBackendLimits {
   monthlyCallBudget: number;
   minRefreshIntervalSec: number;
   maxRefreshIntervalSec: number;
-  defaultPowerIntervalSec: number;
-  defaultEnergyIntervalSec: number;
+  /** Cadence the backend applies to /power-flow when the browser sends none. */
+  defaultPowerFlowIntervalSec: number;
+  /** The FIXED quarter-hour cadence. Reported so the panel states it as fact. */
+  seriesIntervalSec: number;
 }
 
 /**
- * Floor for a refresh interval, in seconds.
+ * Floor for the refresh interval, in seconds.
  *
- * 30 s is the operator-facing minimum. It is enforced again in worker/src/
- * config.ts, because the browser's copy of this number is only a suggestion
- * once localStorage is hand-editable.
+ * 10 s is the operator-facing minimum, down from 30: the only thing still on a
+ * knob is /power-flow, one call returning a figure SolarEdge refreshes every
+ * three seconds. It is enforced again in worker/src/config.ts, because the
+ * browser's copy of this number is only a suggestion once localStorage is
+ * hand-editable.
  */
-export const MIN_REFRESH_INTERVAL_SEC = 30;
+export const MIN_REFRESH_INTERVAL_SEC = 10;
 
 /** A day. Slower than this is indistinguishable from "off" on a kiosk. */
 export const MAX_REFRESH_INTERVAL_SEC = 86400;
 
 /**
- * How often one site's figures are refetched, in seconds.
+ * How often the SERIES endpoints are refetched, in seconds. Not a knob.
  *
- * Two knobs rather than one per endpoint, because the upstream calls come in
- * two natural pairs and the split is what lets the live figures run fast
- * without dragging the expensive history along:
+ * /power, today's /energy, the month series and environmental-benefits are all
+ * QUARTER_HOUR data — the API refuses anything finer, and says so outright:
+ * "Valid resolutions are [QUARTER_HOUR, HOUR]". Polling them faster than the
+ * fifteen minutes they actually advance in buys nothing and costs a call every
+ * time, so the interval is fixed at exactly that and taken off the operator's
+ * hands. There used to be two knobs here (powerSec / energySec) and neither
+ * could make these figures any fresher than this.
+ */
+export const SERIES_INTERVAL_SEC = 900;
+
+/**
+ * How often one site's LIVE power reading is refetched, in seconds.
  *
- *   powerSec  -> /power + /energy (today)      "what is happening now"
- *   energySec -> /energy?MONTH + CO2           "what has accumulated"
+ * One knob, because after the series interval above was fixed there is exactly
+ * one thing left whose freshness an operator can actually buy:
+ * /sites/{id}/power-flow, the instantaneous PV output. SolarEdge advertises
+ * `refreshRate: 3` on it, so anything down to the floor here returns a genuinely
+ * new number rather than the same quarter-hour bucket again.
  *
- * Each pair costs 2 upstream calls per site per tick. The settings panel does
- * that arithmetic on screen against the ceilings the backend reports, because
- * the 30 s floor is affordable per minute (four sites = 32/min against 50) and
- * ruinous per month (~46k/day against a 100k budget) — two limits that a
- * number in seconds gives no hint of.
+ * It costs ONE upstream call per site per tick. The settings panel does the
+ * arithmetic on screen against the ceilings the backend reports, because 10 s
+ * is comfortable per minute (four sites = 24/min against 50) and ruinous per
+ * month (~1M against a 100k budget) — two limits that a number in seconds
+ * gives no hint of.
  */
 export interface SiteRefreshIntervals {
-  /** Real-time power + today's energy. */
-  powerSec: number;
-  /** Month / year / lifetime energy + CO2. */
-  energySec: number;
+  /** Live power from /power-flow. Floor MIN_REFRESH_INTERVAL_SEC. */
+  powerFlowSec: number;
 }
 
 export const DEFAULT_REFRESH_INTERVALS: SiteRefreshIntervals = {
-  // The pre-knob cadence, kept as the default so upgrading changes nothing
-  // about what the board spends until someone deliberately moves it.
-  powerSec: 300,
-  energySec: 1800,
+  // 300 keeps the default spend byte-for-byte what it was under the old two
+  // knobs (0.467 calls/min/site either way), so nobody's bill moves until they
+  // deliberately turn this down.
+  powerFlowSec: 300,
 };
 
 /** Clamp one interval into [MIN, MAX], falling back when unparseable. */
