@@ -11,6 +11,7 @@ import React from 'react';
 import { BuildingInfo, SolarEdgeTransformedOverview, InverterInfo } from '../types';
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
+import { UpdatedAgo } from './UpdatedAgo';
 import { CountUp } from './CountUp';
 import {
   X,
@@ -302,6 +303,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
               metrics={metrics}
               liveLabel={live ? `SolarEdge • ${live.currentPowerW.toLocaleString()} W` : ''}
             />
+            <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
           </div>
 
           <div className="p-3 rounded-2xl bg-slate-900/60 border border-sky-500/20">
@@ -319,6 +321,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
               metrics={metrics}
               liveLabel={live ? `SolarEdge • ${live.dailyEnergyWh.toLocaleString()} Wh` : ''}
             />
+            <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
           </div>
 
           <div className="p-3 rounded-2xl bg-slate-900/60 border border-sky-500/20">
@@ -336,6 +339,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
             {isSimulated && (
               <span className="text-[10px] text-slate-500 font-mono">ประมาณการจากกำลังติดตั้ง</span>
             )}
+            <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
           </div>
 
           <div className="p-3 rounded-2xl bg-slate-900/60 border border-sky-500/20">
@@ -355,6 +359,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
             {isSimulated && (
               <span className="text-[10px] text-slate-500 font-mono">{building.panelCount} แผง PV</span>
             )}
+            <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
           </div>
         </div>
 

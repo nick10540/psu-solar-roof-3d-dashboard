@@ -33,6 +33,14 @@ export const MARKER_FONT_SIZES = {
   statusRow: 11,
   /** "SolarEdge Live" / "Mock Simulator" source line. */
   statusText: 11,
+  /**
+   * "อัปเดต 3 นาทีที่แล้ว" — the age of the reading, under the status line.
+   *
+   * The smallest type on the card, and deliberately a step below
+   * `statusText`: the age is provenance rather than a figure, and it was asked
+   * for on the condition that it stay out of the way of the numbers above it.
+   */
+  updatedAgo: 10,
   /** "ดูหน้าย่อยไซต์ ➔" link to the site sub-page. */
   actionLink: 12,
   /** Site number inside the blue pin circle beneath the card. */

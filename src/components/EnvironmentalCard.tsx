@@ -6,12 +6,18 @@
 import React from 'react';
 import { Trees, Fuel, Factory } from 'lucide-react';
 import { SolarEdgeSiteOverview } from '../types';
+import { UpdatedAgo } from './UpdatedAgo';
 
 interface EnvironmentalCardProps {
   overview: SolarEdgeSiteOverview;
+  /** When the figures behind this card were measured, in epoch ms. */
+  lastUpdateAtMs?: number | null;
 }
 
-export const EnvironmentalCard: React.FC<EnvironmentalCardProps> = ({ overview }) => {
+export const EnvironmentalCard: React.FC<EnvironmentalCardProps> = ({
+  overview,
+  lastUpdateAtMs = null,
+}) => {
   return (
     <div
       id="card-environmental-benefits"
@@ -71,6 +77,8 @@ export const EnvironmentalCard: React.FC<EnvironmentalCardProps> = ({ overview }
           </div>
         </div>
       </div>
+
+      <UpdatedAgo at={lastUpdateAtMs} className="mt-2 text-right" />
     </div>
   );
 };

@@ -32,6 +32,8 @@ import { BuildingInfo } from '../types';
 import { RegionalTotalsPanel } from './RegionalTotalsPanel';
 import { ResolvedSiteMetrics, RegionalTotals, emptySiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA } from './metricDisplay';
+import { formatAgeThai, formatClockThai } from '../utils/relativeTime';
+import { getClockNow, subscribeToClock } from './UpdatedAgo';
 import { animateNumberText } from '../utils/animateNumber';
 import {
   buildUnifiedMapStyle,
@@ -123,7 +125,11 @@ interface MarkerHandle {
   co2UnitEl: HTMLElement;
   statusDot: HTMLElement;
   statusText: HTMLElement;
+  /** "อัปเดต N นาทีที่แล้ว". Hidden outright when the pin has no stamp. */
+  updatedAgoEl: HTMLElement;
   pinIdEl: HTMLElement;
+  /** The reading's own timestamp, kept so the age can be re-rendered on a clock tick. */
+  lastUpdateAtMs: number | null;
   /**
    * The site's clip, when it has one - whichever is currently up for a site
    * with a playlist. Play/pause is governed by the visibility effect below.
@@ -289,6 +295,15 @@ function createMarkerElement(site: BuildingInfo): {
                 ดูหน้าย่อยไซต์ ➔
               </span>
             </div>
+
+            <!--
+              Age of the reading. Its own line rather than a third item on the
+              row above: at 320px that row is already carrying the status text
+              and the sub-page link, and a third item would push one of them to
+              wrap. Muted slate and the smallest type on the card, per the ask
+              that it not compete with the figures.
+            -->
+            <div data-mea="updatedAgo" class="mt-1 text-slate-500 leading-none font-mono" style="font-size:${s(MARKER_FONT_SIZES.updatedAgo)}px"></div>
           </div>
         </div>
         <div data-mea="tail" class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[8px] border-t-sky-400/80 mx-auto -mt-[1px]" style="${tailShift}"></div>
@@ -383,10 +398,37 @@ function createMarkerElement(site: BuildingInfo): {
       co2UnitEl: pick('co2Unit'),
       statusDot: pick('statusDot'),
       statusText: pick('statusText'),
+      updatedAgoEl: pick('updatedAgo'),
       pinIdEl: pick('pinId'),
+      lastUpdateAtMs: null,
       videoEl,
     },
   };
+}
+
+/**
+ * Writes the age line into a marker from the stamp already on its handle.
+ *
+ * Split out of patchMarker because the two run on different clocks. The values
+ * change when a poll lands; the AGE changes every minute whether a poll landed
+ * or not, and re-running the whole patch just to advance a minute counter would
+ * churn every class string on all five cards for one text node.
+ *
+ * A pin with no stamp gets `display:none` rather than an empty line, so the
+ * card does not carry a blank row where an unbound site's age would be.
+ */
+function paintUpdatedAgo(handle: MarkerHandle, now: number): void {
+  const label = formatAgeThai(handle.lastUpdateAtMs, now);
+  const el = handle.updatedAgoEl;
+
+  const nextText = label ?? '';
+  if (el.textContent !== nextText) el.textContent = nextText;
+
+  const nextTitle = formatClockThai(handle.lastUpdateAtMs) ?? '';
+  if (el.title !== nextTitle) el.title = nextTitle;
+
+  const nextDisplay = label ? '' : 'none';
+  if (el.style.display !== nextDisplay) el.style.display = nextDisplay;
 }
 
 /**
@@ -495,6 +537,11 @@ function patchMarker(
           ? 'ไม่มีข้อมูลจาก API'
           : 'ยังไม่ได้ผูก API';
   if (handle.statusText.textContent !== nextStatusText) handle.statusText.textContent = nextStatusText;
+
+  // Stash the stamp on the handle so the clock-tick effect below can re-age it
+  // without needing the metrics again, then paint it once now.
+  handle.lastUpdateAtMs = metrics.lastUpdateAtMs;
+  paintUpdatedAgo(handle, getClockNow());
 
   if (handle.lng !== site.lng || handle.lat !== site.lat) {
     handle.marker.setLngLat([site.lng, site.lat]);
@@ -1209,6 +1256,26 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     // The expensive part - innerHTML parsing and Marker construction - happens
     // once per site id, not once per tick.
   }, [isMapCreated, buildings, metricsById, selectedBuildingId, showPinCards]);
+
+  // -------------------------------------------------------------------------
+  // Age lines: advance on the clock, not on the data
+  //
+  // Between polls nothing above re-runs, so without this every card would sit
+  // frozen at "อัปเดตเมื่อสักครู่" for the whole five minutes and then jump.
+  //
+  // Rides the same shared ticker the React cards use (see UpdatedAgo.tsx) so
+  // the map and the panels over it can never print two different ages for one
+  // reading. Each tick writes one text node per marker — no React render, and
+  // nothing that touches the map.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (!isMapCreated) return;
+
+    return subscribeToClock(() => {
+      const now = getClockNow();
+      markersRef.current.forEach((handle) => paintUpdatedAgo(handle, now));
+    });
+  }, [isMapCreated]);
 
   // -------------------------------------------------------------------------
   // Site clip playback governor

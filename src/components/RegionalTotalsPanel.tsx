@@ -44,6 +44,7 @@ import {
 import { featuredCardFontSizePx } from '../config/markerTypography';
 import { NO_DATA } from './metricDisplay';
 import { CountUp } from './CountUp';
+import { UpdatedAgo } from './UpdatedAgo';
 
 /**
  * Sizes borrowed from the featured pin card, in px, resolved once at module
@@ -152,6 +153,13 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
           {isLive ? 'LIVE API' : 'MOCK'}
         </span>
       </div>
+
+      {/* How old the figures below are. Sits under the rule rather than beside
+          the LIVE/MOCK chip: the chip says which SOURCE is feeding the band,
+          which is a different question from how long ago it last spoke, and
+          putting the two in one row invited them to be read as one badge.
+          Muted and unsized-up on purpose — see UpdatedAgo.tsx. */}
+      <UpdatedAgo at={totals.lastUpdateAtMs} className="-mt-1 mb-2" />
 
       {/* Not connected yet: state it plainly instead of showing zeros */}
       {!hasData && (

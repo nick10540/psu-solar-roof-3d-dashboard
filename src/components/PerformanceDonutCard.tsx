@@ -5,12 +5,18 @@
 
 import React from 'react';
 import { SolarEdgeSiteOverview } from '../types';
+import { UpdatedAgo } from './UpdatedAgo';
 
 interface PerformanceDonutCardProps {
   overview: SolarEdgeSiteOverview;
+  /** When the figures behind this card were measured, in epoch ms. */
+  lastUpdateAtMs?: number | null;
 }
 
-export const PerformanceDonutCard: React.FC<PerformanceDonutCardProps> = ({ overview }) => {
+export const PerformanceDonutCard: React.FC<PerformanceDonutCardProps> = ({
+  overview,
+  lastUpdateAtMs = null,
+}) => {
   const percentage = overview.performanceRatio;
   // Circular gauge math
   const radius = 34;
@@ -90,6 +96,8 @@ export const PerformanceDonutCard: React.FC<PerformanceDonutCardProps> = ({ over
           </div>
         </div>
       </div>
+
+      <UpdatedAgo at={lastUpdateAtMs} className="mt-2 text-right" />
     </div>
   );
 };

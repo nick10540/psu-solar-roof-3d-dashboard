@@ -6,13 +6,25 @@
 import React from 'react';
 import { Zap, Calendar, Database, Leaf } from 'lucide-react';
 import { SolarEdgeSiteOverview } from '../types';
+import { UpdatedAgo } from './UpdatedAgo';
 
 interface SolarOverviewCardProps {
   overview: SolarEdgeSiteOverview;
   isLiveUpdating?: boolean;
+  /**
+   * When the figures behind this card were measured, in epoch ms.
+   *
+   * Optional so an unwired caller simply gets no age line rather than a
+   * fabricated one — omitted and `null` mean the same thing here.
+   */
+  lastUpdateAtMs?: number | null;
 }
 
-export const SolarOverviewCard: React.FC<SolarOverviewCardProps> = ({ overview, isLiveUpdating }) => {
+export const SolarOverviewCard: React.FC<SolarOverviewCardProps> = ({
+  overview,
+  isLiveUpdating,
+  lastUpdateAtMs = null,
+}) => {
   return (
     <div
       id="card-solar-overview"
@@ -96,6 +108,11 @@ export const SolarOverviewCard: React.FC<SolarOverviewCardProps> = ({ overview, 
           </div>
         </div>
       </div>
+
+      {/* Age of the figures above. Below the tiles rather than beside the LIVE
+          pip in the header: the pip says the feed is alive, this says when it
+          last said anything, and stacking them would read as one indicator. */}
+      <UpdatedAgo at={lastUpdateAtMs} className="mt-2 text-right" />
     </div>
   );
 };

@@ -4,7 +4,7 @@
  * Provides seamless access to Map, Overview, Building List, and Generation Charts
  */
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { 
   Map, 
   Zap, 
@@ -19,6 +19,7 @@ import { PerformanceDonutCard } from './PerformanceDonutCard';
 import { EnvironmentalCard } from './EnvironmentalCard';
 import { BuildingListSidebar } from './BuildingListSidebar';
 import { PowerChartCard } from './PowerChartCard';
+import { newestTimestamp } from '../utils/relativeTime';
 
 export type MobileTab = 'map' | 'overview' | 'buildings' | 'chart';
 
@@ -75,6 +76,20 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
 }) => {
   const isSheetOpen = activeTab !== 'map';
 
+  /**
+   * When the figures on the overview cards were measured.
+   *
+   * Derived here from the per-site overviews this sheet already receives,
+   * rather than taken as a prop: `overview` is the aggregate the cards render
+   * and carries no stamp of its own, and the freshest site behind it is the
+   * honest age for a sum. Null when nothing has reported, which the cards
+   * render as no age line at all.
+   */
+  const lastUpdateAtMs = useMemo(
+    () => newestTimestamp(Object.values(overviews).map((ov) => ov.rawTimestamp)),
+    [overviews]
+  );
+
   const handleSelectBuildingAndClose = (bld: BuildingInfo | null) => {
     onSelectBuilding(bld);
     onChangeTab('map');
@@ -129,10 +144,14 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
             <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
               {activeTab === 'overview' && (
                 <div className="space-y-3 pb-4">
-                  <SolarOverviewCard overview={overview} isLiveUpdating={isLiveSimulation} />
+                  <SolarOverviewCard
+                    overview={overview}
+                    isLiveUpdating={isLiveSimulation}
+                    lastUpdateAtMs={lastUpdateAtMs}
+                  />
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <PerformanceDonutCard overview={overview} />
-                    <EnvironmentalCard overview={overview} />
+                    <PerformanceDonutCard overview={overview} lastUpdateAtMs={lastUpdateAtMs} />
+                    <EnvironmentalCard overview={overview} lastUpdateAtMs={lastUpdateAtMs} />
                   </div>
                 </div>
               )}

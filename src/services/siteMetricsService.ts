@@ -33,6 +33,8 @@ import { capacityKwpFor } from '../config/siteCapacity';
 
 import { CO2_KG_PER_KWH } from '../utils/energyEquivalents';
 
+import { newestTimestamp } from '../utils/relativeTime';
+
 export type DataSourceMode = 'mock' | 'live';
 
 /** A number, or `null` meaning "no data". Never 0-as-unknown. */
@@ -64,6 +66,15 @@ export interface ResolvedSiteMetrics {
    */
   co2Kg: MetricValue;
   lastUpdateTime: string | null;
+  /**
+   * When these figures were MEASURED, in epoch ms — not when they were fetched.
+   *
+   * Parsed from the same SolarEdge stamp `lastUpdateTime` is formatted from, so
+   * a card can print an age that ticks on its own between polls. `null` means
+   * the pin has nothing to state an age for, and the age line is then omitted
+   * rather than defaulted to "just now". See utils/relativeTime.ts.
+   */
+  lastUpdateAtMs: number | null;
 }
 
 export interface RegionalTotals {
@@ -78,6 +89,14 @@ export interface RegionalTotals {
   lifetimeEnergyKwh: MetricValue;
   /** Sum of the reporting sites' CO2, in kg. */
   co2Kg: MetricValue;
+  /**
+   * When the freshest pin feeding these totals was measured, in epoch ms.
+   *
+   * The freshest rather than the oldest, matching the per-pin rule below: the
+   * band is a sum across every reporting site, and dating it by the one site
+   * that reports least often would make the whole headline look stale.
+   */
+  lastUpdateAtMs: number | null;
 }
 
 export function dataSourceModeFromConfig(useMock: boolean): DataSourceMode {
@@ -110,6 +129,7 @@ export function emptySiteMetrics(
     capacityKwp,
     co2Kg: null,
     lastUpdateTime: null,
+    lastUpdateAtMs: null,
   };
 }
 
@@ -185,6 +205,10 @@ export function resolveSiteMetrics(
       capacityKwp,
       co2Kg: co2Values.length > 0 ? co2Values.reduce((a, b) => a + b, 0) : null,
       lastUpdateTime: newestLabel,
+      // The same stamp `newestLabel` was formatted from, as a number the cards
+      // can age against a live clock. Re-parsed from the raw values rather than
+      // from the Thai label above, which is display text and lossy.
+      lastUpdateAtMs: newestTimestamp(live.map((ov) => ov.rawTimestamp)),
     };
   }
 
@@ -205,6 +229,16 @@ export function resolveSiteMetrics(
     capacityKwp,
     co2Kg: building.lifetimeEnergyKwh * CO2_KG_PER_KWH,
     lastUpdateTime: null,
+    /**
+     * "Now", and genuinely so.
+     *
+     * The simulator advances `building` on its own interval and this resolver
+     * re-runs on exactly that change, so the moment this line executes IS the
+     * moment the mock figures were produced. Freezing when the simulation is
+     * paused is the point: the age then climbs, which is the honest reading of
+     * a simulator that has stopped ticking.
+     */
+    lastUpdateAtMs: Date.now(),
   };
 }
 
@@ -253,6 +287,7 @@ export function aggregateSiteMetrics(
       todayEnergyKwh: null,
       lifetimeEnergyKwh: null,
       co2Kg: null,
+      lastUpdateAtMs: null,
     };
   }
 
@@ -269,5 +304,12 @@ export function aggregateSiteMetrics(
     todayEnergyKwh: Math.round(sum((m) => m.todayEnergyKwh) * 10) / 10,
     lifetimeEnergyKwh: sum((m) => m.lifetimeEnergyKwh),
     co2Kg: sum((m) => m.co2Kg),
+    lastUpdateAtMs: reporting.reduce<number | null>(
+      (newest, m) =>
+        m.lastUpdateAtMs !== null && (newest === null || m.lastUpdateAtMs > newest)
+          ? m.lastUpdateAtMs
+          : newest,
+      null
+    ),
   };
 }

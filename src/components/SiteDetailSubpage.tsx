@@ -21,6 +21,7 @@ import { resolveSiteMediaPlaylist, resolveSiteMediaSpeed } from '../config/siteM
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
 import { CountUp } from './CountUp';
+import { UpdatedAgo } from './UpdatedAgo';
 import { CO2_KG_PER_KWH_SE, treesFromCo2Kg } from '../utils/energyEquivalents';
 import { 
   ArrowLeft, 
@@ -507,6 +508,10 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             )}
           </div>
           <SourceCaption metrics={metrics} liveLabel="SolarEdge Active Inverters" />
+          {/* Age of the reading, under its provenance line. SolarEdge samples
+              power quarter-hourly, so this legitimately reads a few minutes old
+              even straight after a successful poll — which is the point. */}
+          <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
           <div className="absolute right-0 bottom-0 translate-x-3 translate-y-3 w-16 h-16 bg-amber-500/10 rounded-full blur-xl pointer-events-none" />
         </div>
 
@@ -524,6 +529,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
           </div>
           <div className="text-[10px] text-slate-400 mt-1">ประมาณการรายได้ {revenueTodayText}</div>
           <SourceCaption metrics={metrics} liveLabel="จาก SolarEdge API" />
+          <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
         </div>
 
         {/* Metric 3: พลังงานผลิตทั้งหมด (Lifetime Energy) */}
@@ -542,6 +548,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <span>{lifetimeCo2Text}</span>
           </div>
           <SourceCaption metrics={metrics} liveLabel="จาก SolarEdge API" />
+          <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
         </div>
 
         {/* Metric 4: กำลังติดตั้งจริง (kWp) & SolarEdge Info */}
@@ -568,6 +575,11 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             {isSimulated ? `${site.panelCount} แผง PV (จำลอง)` : ''}
           </div>
           <SourceCaption metrics={metrics} liveLabel="จาก SolarEdge API" />
+          {/* Capacity is a nameplate spec and does not itself go stale, but the
+              card is read as one of a row of four — omitting the age here would
+              read as "this one has no timestamp" rather than "this one cannot
+              age". It carries the site's stamp like its neighbours. */}
+          <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
         </div>
       </div>
 
@@ -598,6 +610,11 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                   {isMeasuredRange ? 'วัดจริง' : 'จำลอง'}
                 </span>
               )}
+              {/* Only the daily curve is a measurement, so only it has an age
+                  worth printing. A simulated range is generated on render — an
+                  age line there would say "เมื่อสักครู่" forever and mean
+                  nothing. */}
+              {isMeasuredRange && <UpdatedAgo at={metrics.lastUpdateAtMs} />}
             </div>
 
             {/* Time Range Pills */}
