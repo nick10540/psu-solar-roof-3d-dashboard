@@ -127,13 +127,22 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
   /** Dims a figure with nothing behind it, matching the map's no-data pins. */
   const tone = (colour: string) => (hasNoData ? 'text-slate-600' : colour);
 
+  /**
+   * This site's display multiplier, already applied to every `metrics.*` figure.
+   *
+   * Anything on this page derived from `overview` instead has to apply it here,
+   * or it lands beside a scaled headline it disagrees with. `1` unless
+   * config/siteMultiplier.ts says otherwise, so this is a no-op by default.
+   */
+  const multiplier = metrics.multiplier;
+
   // Monthly production is not part of ResolvedSiteMetrics - only the API
   // reports it. The mock estimate is kept but no longer masquerades as a
   // reading; it is captioned as simulated like everything else in mock mode.
   const monthlyKwh = live
-    ? live.monthlyEnergyKwh
+    ? live.monthlyEnergyKwh * multiplier
     : isSimulated
-      ? building.capacityKwp * 115
+      ? building.capacityKwp * 115 * multiplier
       : null;
   // A node, not a string: the digits ease to the new reading, the unit does not.
   const monthlyText =
@@ -301,7 +310,11 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
             </div>
             <SourceCaption
               metrics={metrics}
-              liveLabel={live ? `SolarEdge • ${live.currentPowerW.toLocaleString()} W` : ''}
+              liveLabel={
+                live
+                  ? `SolarEdge • ${Math.round(live.currentPowerW * multiplier).toLocaleString()} W`
+                  : ''
+              }
             />
             <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
           </div>
@@ -319,7 +332,11 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
             </div>
             <SourceCaption
               metrics={metrics}
-              liveLabel={live ? `SolarEdge • ${live.dailyEnergyWh.toLocaleString()} Wh` : ''}
+              liveLabel={
+                live
+                  ? `SolarEdge • ${Math.round(live.dailyEnergyWh * multiplier).toLocaleString()} Wh`
+                  : ''
+              }
             />
             <UpdatedAgo at={metrics.lastUpdateAtMs} className="mt-0.5" />
           </div>
@@ -334,7 +351,11 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
             </div>
             <SourceCaption
               metrics={metrics}
-              liveLabel={live ? `SolarEdge • ${live.monthlyEnergyKwh.toLocaleString()} kWh` : ''}
+              liveLabel={
+                live
+                  ? `SolarEdge • ${Math.round(live.monthlyEnergyKwh * multiplier).toLocaleString()} kWh`
+                  : ''
+              }
             />
             {isSimulated && (
               <span className="text-[10px] text-slate-500 font-mono">ประมาณการจากกำลังติดตั้ง</span>

@@ -82,8 +82,10 @@ import {
   resolveAllSiteMetrics,
   aggregateSiteMetrics,
   emptySiteMetrics,
+  siteMultipliersBySiteId,
   ResolvedSiteMetrics,
 } from './services/siteMetricsService';
+import { DEFAULT_SITE_MULTIPLIER } from './config/siteMultiplier';
 import {
   co2TonsFromKg,
   co2TonsFromKwh,
@@ -224,12 +226,24 @@ export default function App() {
   const bindingsRef = useRef(bindings);
   /** Latest config, mirrored for the same reason as bindingsRef. */
   const configRef = useRef(config);
+  /**
+   * Latest pins, mirrored for the same reason again.
+   *
+   * The poll callback needs their `code` to look up each site's display
+   * multiplier, and listing `buildings` as a dependency would restart the poll
+   * interval on every tick of the mock simulator - which writes to `buildings`
+   * every few seconds.
+   */
+  const buildingsRef = useRef(buildings);
   useEffect(() => {
     configRef.current = config;
   }, [config]);
   useEffect(() => {
     bindingsRef.current = bindings;
   }, [bindings]);
+  useEffect(() => {
+    buildingsRef.current = buildings;
+  }, [buildings]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -310,14 +324,32 @@ export default function App() {
           let totalCo2Kg = 0;
           let anyCo2 = false;
 
+          /**
+           * Each site's display multiplier, keyed the way this loop is keyed.
+           *
+           * This is the one aggregation that does NOT go through
+           * resolveSiteMetrics - it exists to fill the month / year fields the
+           * resolver does not carry - so it has to apply the multiplier itself
+           * or the overview cards would contradict the map pins beside them.
+           */
+          const multipliers = siteMultipliersBySiteId(
+            buildingsRef.current,
+            bindingsRef.current
+          );
+
           overviewValues.forEach((ov) => {
-            totalPowerKw += ov.currentPowerKw;
-            totalTodayKwh += ov.dailyEnergyKwh;
-            totalMonthlyKwh += ov.monthlyEnergyKwh;
-            totalYearlyKwh += ov.yearlyEnergyKwh;
-            totalLifetimeKwh += ov.lifetimeEnergyKwh;
+            // An overview nothing is bound to still counts, unscaled: it was
+            // fetched because an operator registered the id by hand, and no pin
+            // has claimed it yet to lend it a factor.
+            const m = multipliers[ov.siteId] ?? DEFAULT_SITE_MULTIPLIER;
+
+            totalPowerKw += ov.currentPowerKw * m;
+            totalTodayKwh += ov.dailyEnergyKwh * m;
+            totalMonthlyKwh += ov.monthlyEnergyKwh * m;
+            totalYearlyKwh += ov.yearlyEnergyKwh * m;
+            totalLifetimeKwh += ov.lifetimeEnergyKwh * m;
             if (typeof ov.co2Kg === 'number' && Number.isFinite(ov.co2Kg)) {
-              totalCo2Kg += ov.co2Kg;
+              totalCo2Kg += ov.co2Kg * m;
               anyCo2 = true;
             }
           });

@@ -148,14 +148,20 @@ export const RefreshCadenceSettings: React.FC<RefreshCadenceSettingsProps> = ({
    * What this cadence costs upstream.
    *
    * Counted over the sites the dashboard actually asks for, not the whole
-   * account list: an unbound site in the account costs nothing. Two calls per
-   * pair per tick, plus one metadata call per site per day.
+   * account list: an unbound site in the account costs nothing. Plus one
+   * metadata call per site per day.
+   *
+   * Per tick the POWER knob costs three calls (/power for the day's curve,
+   * /power-flow for the live kW, /energy for today) and the ENERGY knob two
+   * (/energy?MONTH and /environmental-benefits). The power figure was 2 until
+   * /power-flow was added — 60 s x 3 and 60 s x 2 are where the numerators
+   * come from.
    */
   const cost = useMemo(() => {
     let callsPerMin = 0;
     for (const siteId of activeSiteIds) {
       const iv = effectiveFor(siteId);
-      callsPerMin += 120 / iv.powerSec + 120 / iv.energySec;
+      callsPerMin += 180 / iv.powerSec + 120 / iv.energySec;
     }
 
     const perDay = callsPerMin * 60 * 24 + activeSiteIds.length;

@@ -73,6 +73,17 @@ export default defineConfig(() => {
       },
     },
     server: {
+      /**
+       * 3000 by default, or whatever `PORT` says.
+       *
+       * The port used to be a `--port=3000` flag on the `dev` script, which
+       * made it impossible for a tool that assigns its own port to start this
+       * server at all - it would always try to claim 3000 and collide with a
+       * copy already running. Reading the env var here keeps `npm run dev` on
+       * 3000 exactly as before while letting anything that needs a different
+       * port ask for one.
+       */
+      port: Number(process.env.PORT) || 3000,
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
       proxy: {

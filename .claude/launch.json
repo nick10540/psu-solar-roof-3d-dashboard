@@ -8,7 +8,8 @@
         "run",
         "dev"
       ],
-      "port": 3000
+      "port": 3000,
+      "autoPort": true
     },
     {
       "name": "worker",
@@ -17,7 +18,8 @@
         "run",
         "worker"
       ],
-      "port": 8787
+      "port": 8787,
+      "autoPort": false
     }
   ]
 }

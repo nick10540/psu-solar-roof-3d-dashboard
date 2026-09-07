@@ -31,6 +31,8 @@ import {
 
 import { capacityKwpFor } from '../config/siteCapacity';
 
+import { DEFAULT_SITE_MULTIPLIER, siteMultiplierFor } from '../config/siteMultiplier';
+
 import { CO2_KG_PER_KWH } from '../utils/energyEquivalents';
 
 import { newestTimestamp } from '../utils/relativeTime';
@@ -65,6 +67,16 @@ export interface ResolvedSiteMetrics {
    * every other mock number here.
    */
   co2Kg: MetricValue;
+  /**
+   * The per-site multiplier already APPLIED to every measured figure above.
+   *
+   * Carried on the result so a surface that prints something the resolver does
+   * not carry - monthly energy, or the raw W / Wh the API reported - can scale
+   * it the same way instead of landing beside a headline it disagrees with.
+   * `1` means untouched, which is every site until siteMultiplier.ts says
+   * otherwise. Capacity is excluded by design; see that file.
+   */
+  multiplier: number;
   lastUpdateTime: string | null;
   /**
    * When these figures were MEASURED, in epoch ms — not when they were fetched.
@@ -113,7 +125,8 @@ export function emptySiteMetrics(
   siteId: number | null = null,
   isBound = false,
   siteIds: number[] = [],
-  capacityKwp: MetricValue = null
+  capacityKwp: MetricValue = null,
+  multiplier: number = DEFAULT_SITE_MULTIPLIER
 ): ResolvedSiteMetrics {
   return {
     buildingId,
@@ -128,6 +141,10 @@ export function emptySiteMetrics(
     // Capacity survives "no data": it is a nameplate spec, not a reading.
     capacityKwp,
     co2Kg: null,
+    // Survives "no data" for the same reason capacity does: it is configuration,
+    // not a reading, so a surface that scales its own derived figure still knows
+    // the factor even while this pin has nothing to show.
+    multiplier,
     lastUpdateTime: null,
     lastUpdateAtMs: null,
   };
@@ -163,6 +180,18 @@ export function resolveSiteMetrics(
    */
   const capacityKwp: MetricValue = capacityKwpFor(building.code) ?? building.capacityKwp ?? null;
 
+  /**
+   * Display multiplier for this site, applied to every MEASURED figure below
+   * and to neither `capacityKwp` above nor anything else that is a spec.
+   *
+   * Applied here rather than in each card because this function is already the
+   * single place that decides what a site may show: scaling downstream would
+   * mean the map pin, the sub-page and the regional band each had their own
+   * chance to forget, which is the exact class of drift this file exists to
+   * stop. `1` for every site until siteMultiplier.ts is edited.
+   */
+  const multiplier = siteMultiplierFor(building.code);
+
   if (mode === 'live') {
     const live = siteIds
       .map((id) => overviews[id])
@@ -172,7 +201,7 @@ export function resolveSiteMetrics(
     // One dead ID among three does NOT blank the pin: the sites that did report
     // are still real, and their sum is still the best available total.
     if (live.length === 0) {
-      return emptySiteMetrics(building.id, primaryId, isBound, siteIds, capacityKwp);
+      return emptySiteMetrics(building.id, primaryId, isBound, siteIds, capacityKwp, multiplier);
     }
 
     const sum = (pick: (ov: SolarEdgeTransformedOverview) => number): number =>
@@ -199,11 +228,21 @@ export function resolveSiteMetrics(
       isBound,
       hasData: true,
       source: 'live',
-      currentPowerKw: Math.round(sum((ov) => ov.currentPowerKw) * 10) / 10,
-      todayEnergyKwh: Math.round(sum((ov) => ov.dailyEnergyKwh) * 10) / 10,
-      lifetimeEnergyKwh: sum((ov) => ov.lifetimeEnergyKwh),
+      // Scaled BEFORE rounding, so the figure on screen is the rounded product
+      // rather than a product of rounded parts - the two drift apart once a
+      // multiplier is large enough to magnify the 0.05 kW that rounding drops.
+      currentPowerKw: Math.round(sum((ov) => ov.currentPowerKw) * multiplier * 10) / 10,
+      todayEnergyKwh: Math.round(sum((ov) => ov.dailyEnergyKwh) * multiplier * 10) / 10,
+      lifetimeEnergyKwh: sum((ov) => ov.lifetimeEnergyKwh) * multiplier,
       capacityKwp,
-      co2Kg: co2Values.length > 0 ? co2Values.reduce((a, b) => a + b, 0) : null,
+      // CO2 scales with the energy it represents. Leaving SolarEdge's own figure
+      // unscaled beside a scaled lifetime would put two numbers on the same card
+      // that no longer divide into the portal's 0.392 kg/kWh.
+      co2Kg:
+        co2Values.length > 0
+          ? co2Values.reduce((a, b) => a + b, 0) * multiplier
+          : null,
+      multiplier,
       lastUpdateTime: newestLabel,
       // The same stamp `newestLabel` was formatted from, as a number the cards
       // can age against a live clock. Re-parsed from the raw values rather than
@@ -223,11 +262,15 @@ export function resolveSiteMetrics(
     isBound,
     hasData: true,
     source: 'mock',
-    currentPowerKw: building.currentPowerKw,
-    todayEnergyKwh: building.todayEnergyKwh,
-    lifetimeEnergyKwh: building.lifetimeEnergyKwh,
+    // Scaled in mock mode too. The multiplier describes the SITE, not the feed,
+    // so a card must not change value when an operator flips the data source -
+    // that would make the switch look like it moved the readings.
+    currentPowerKw: building.currentPowerKw * multiplier,
+    todayEnergyKwh: building.todayEnergyKwh * multiplier,
+    lifetimeEnergyKwh: building.lifetimeEnergyKwh * multiplier,
     capacityKwp,
-    co2Kg: building.lifetimeEnergyKwh * CO2_KG_PER_KWH,
+    co2Kg: building.lifetimeEnergyKwh * multiplier * CO2_KG_PER_KWH,
+    multiplier,
     lastUpdateTime: null,
     /**
      * "Now", and genuinely so.
@@ -250,6 +293,32 @@ export function resolveAllSiteMetrics(
   mode: DataSourceMode
 ): ResolvedSiteMetrics[] {
   return buildings.map((b) => resolveSiteMetrics(b, bindings[b.id], overviews, mode));
+}
+
+/**
+ * SolarEdge site id -> the multiplier of the pin it is bound to.
+ *
+ * For the one path that does NOT go through the resolver: App aggregates the
+ * raw overviews itself to fill the month / year fields of the glassmorphic
+ * overview cards, which ResolvedSiteMetrics does not carry. That loop is keyed
+ * by SolarEdge site id and the multiplier is keyed by building code, so this
+ * walks the bindings once to join the two.
+ *
+ * An id nobody has bound is simply absent - the caller falls back to 1, which
+ * is what an unmapped site should show anyway.
+ */
+export function siteMultipliersBySiteId(
+  buildings: BuildingInfo[],
+  bindings: Record<number, BuildingSiteBinding>
+): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const building of buildings) {
+    const multiplier = siteMultiplierFor(building.code);
+    for (const id of bindingSiteIds(bindings[building.id])) {
+      out[id] = multiplier;
+    }
+  }
+  return out;
 }
 
 /**

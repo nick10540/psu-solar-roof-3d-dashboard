@@ -620,13 +620,67 @@ interface PowerCacheEntry {
   storedAt: number;
 }
 
+/**
+ * The instantaneous reading from /power-flow.
+ *
+ * `active` is the inverter TALKING, not the inverter producing: a healthy site
+ * at midnight answers `active: true, power: 0`, while a site whose gateway has
+ * been off since July answers `active: false`. Keeping the flag rather than
+ * just the number is the entire point — see the no-data branch in fetchOneSite.
+ */
+interface PowerFlowCacheEntry {
+  /** Instantaneous PV output in KILOWATTS, as the endpoint reports it. */
+  pvKw: number | null;
+  active: boolean;
+  storedAt: number;
+}
+
 const powerCache = new Map<number, PowerCacheEntry>();
+const powerFlowCache = new Map<number, PowerFlowCacheEntry>();
 const energyTodayCache = new Map<number, { dailyWh: number; storedAt: number }>();
 
 /** Forget the live series. Tests and manual resets only. */
 export function clearSeriesCaches(): void {
   powerCache.clear();
+  powerFlowCache.clear();
   energyTodayCache.clear();
+}
+
+/**
+ * The shape of GET /sites/{id}/power-flow, as far as this backend cares.
+ *
+ * Verified against the live API 2026-09-07:
+ *   {"updatedAt":"2026-09-07T11:32:17.316+07:00","refreshRate":3,"unit":"kW",
+ *    "pv":{"active":true,"power":81.28}, "load":…, "storage":…, "grid":…}
+ *
+ * Only `pv` is read. This dashboard shows generation; load, storage and grid
+ * are null on every site in this fleet anyway.
+ */
+interface WirePowerFlowResponse {
+  unit?: string;
+  pv?: { active?: boolean; power?: number | null } | null;
+}
+
+/**
+ * Instantaneous PV output in kW, or `null` when the site is not reporting.
+ *
+ * `unit` is checked rather than assumed: every site in this fleet answers "kW",
+ * but a silent switch to watts would multiply every card on the board by a
+ * thousand, and that is not a failure anyone would read as a unit bug.
+ */
+function readPowerFlow(raw: unknown): { pvKw: number | null; active: boolean } {
+  const body = (raw ?? {}) as WirePowerFlowResponse;
+  const pv = body.pv ?? null;
+  const active = pv?.active === true;
+  const value = pv?.power;
+
+  if (!active || typeof value !== 'number' || !Number.isFinite(value)) {
+    return { pvKw: null, active };
+  }
+
+  const unit = String(body.unit ?? 'kW').trim().toUpperCase();
+  const pvKw = unit === 'W' ? value / 1000 : value;
+  return { pvKw, active };
 }
 
 /**
@@ -636,9 +690,15 @@ export function clearSeriesCaches(): void {
  * a rate limit must not blank out ตรัง, which is what a thrown error would do
  * to the loop that calls this.
  *
- * Cost per round: 0 when nothing is due, 2 when the live pair is (power +
- * today's energy), 2 more when the totals are. Site metadata is one call a
- * day and `forceRefresh` deliberately does not touch it — names do not change.
+ * Cost per round: 0 when nothing is due, 3 when the live group is (power +
+ * power-flow + today's energy), 2 more when the totals are. Site metadata is
+ * one call a day and `forceRefresh` deliberately does not touch it — names do
+ * not change.
+ *
+ * That live group was 2 until /power-flow was added for the instantaneous kW,
+ * so a given cadence now costs 50% more on the power knob than it used to.
+ * The settings panel does this arithmetic live for the sites actually bound —
+ * check it there after changing an interval.
  */
 async function fetchOneSite(
   cfg: ResolvedConfig,
@@ -696,6 +756,34 @@ async function fetchOneSite(
     }
   }
 
+  // --- instantaneous power -------------------------------------------------
+  // /power is a QUARTER_HOUR series and cannot be finer — the API says so
+  // outright: "Valid resolutions are [QUARTER_HOUR, HOUR]". So the newest
+  // sample it can offer is up to 15 minutes old, and at a 5-minute cadence the
+  // headline kW was running as much as 20 minutes behind reality.
+  //
+  // /power-flow answers with the live figure instead (it advertises
+  // refreshRate: 3 seconds), so the number on the card is now only as old as
+  // this backend's own polling interval.
+  //
+  // /power is still fetched above, and still owns two things: the day's curve
+  // for the site sub-page chart, and `lastUpdateTime`. That stamp deliberately
+  // stays on the quarter-hour series — it dates the ENERGY figures beside it,
+  // which are still quarter-hourly, and moving it to the power-flow clock would
+  // date them by something they did not come from.
+  let flow = powerFlowCache.get(siteId);
+  if (forceRefresh || !flow || now - flow.storedAt >= liveTtlMs) {
+    try {
+      const raw = await getJson<unknown>(cfg, siteId, `/sites/${siteId}/power-flow`);
+      flow = { ...readPowerFlow(raw), storedAt: Date.now() };
+      powerFlowCache.set(siteId, flow);
+    } catch (err) {
+      // Not fatal: the quarter-hour series below still carries a real reading,
+      // and a stale-but-true kW beats a blank campus on a ceremony screen.
+      note(err);
+    }
+  }
+
   let energy = energyTodayCache.get(siteId);
   if (forceRefresh || !energy || now - energy.storedAt >= liveTtlMs) {
     try {
@@ -743,9 +831,41 @@ async function fetchOneSite(
     };
   }
 
+  // A site whose inverter is not talking is "no data" for the WHOLE site, not a
+  // zero and not a set of frozen totals.
+  //
+  // This is the distinction /power alone could never draw. A healthy site at
+  // midnight and a site dead since July both produce 0 kW; only `pv.active`
+  // separates them. Blanking everything rather than just the kW is deliberate:
+  // ตรัง has been dark since 2026-07-29, and its lifetime and CO2 figures are
+  // that day's numbers wearing today's date. Under a "Live API" badge on a 72"
+  // screen that is worse than an honest blank.
+  //
+  // Gated on a reading having actually arrived: a failed /power-flow leaves
+  // `flow` undefined, and that must fall through to the quarter-hour series
+  // below rather than blank a working campus over one lost request.
+  if (flow && !flow.active) {
+    return {
+      site,
+      overview: null,
+      power: [],
+      error: failure ?? {
+        siteId,
+        message: 'อินเวอร์เตอร์ของไซต์นี้ไม่ได้ส่งข้อมูล (inverter offline)',
+        status: 503,
+      },
+    };
+  }
+
   const overview: WireOverview = {
     lastUpdateTime: power.latest?.timestamp || site.lastUpdateTime || new Date().toISOString(),
-    currentPower: { power: power.latest?.value ?? 0 },
+    // The live figure when /power-flow answered, else the newest quarter-hour
+    // sample. Watts on the wire because that is what this field has always
+    // been and what the dashboard's transform divides back down — the endpoint
+    // reports kW, so this is the ONLY place the two units meet.
+    currentPower: {
+      power: flow?.pvKw != null ? flow.pvKw * 1000 : (power.latest?.value ?? 0),
+    },
     lastDayData: { energy: energy.dailyWh },
     lastMonthData: { energy: cold.monthlyWh },
     lastYearData: { energy: cold.yearlyWh },

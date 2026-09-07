@@ -261,7 +261,20 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   // from `allSites` also keeps this correct as pins are added or removed.
   const fleetCapacityKwp = useMemo(() => totalInstalledKwp(allSites), [allSites]);
   const capacityRatio = fleetCapacityKwp > 0 ? site.capacityKwp / fleetCapacityKwp : 0;
-  
+
+  /**
+   * This site's display multiplier, already applied to every `metrics.*` figure
+   * above by resolveSiteMetrics. The chart below is drawn from `overview` and
+   * from the shared simulation instead, so it has to apply the factor itself -
+   * otherwise a scaled headline sits above a curve that peaks somewhere else.
+   * `1` unless config/siteMultiplier.ts says otherwise.
+   */
+  const multiplier = metrics.multiplier;
+
+  /** Fleet share and display multiplier in one factor, for the simulated series. */
+  const simulatedScale = capacityRatio * multiplier;
+
+
   /**
    * Today's curve: the site's own measurements when the backend has them,
    * otherwise the shared simulation scaled by this site's share of the fleet.
@@ -282,7 +295,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
         return {
           timestamp: p.timestamp,
           timeLabel: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
-          powerKw: p.powerKw,
+          powerKw: Math.round(p.powerKw * multiplier * 10) / 10,
           // Not measured. Zero keeps the chart's own maths safe; nothing draws
           // these while a measured curve is in play.
           clearSkyPotentialKw: 0,
@@ -296,28 +309,28 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
 
     return dayData.map((d) => ({
       ...d,
-      powerKw: Math.round(d.powerKw * capacityRatio * 10) / 10,
-      clearSkyPotentialKw: Math.round(d.clearSkyPotentialKw * capacityRatio * 10) / 10,
-      energyKwh: Math.round(d.energyKwh * capacityRatio * 10) / 10,
+      powerKw: Math.round(d.powerKw * simulatedScale * 10) / 10,
+      clearSkyPotentialKw: Math.round(d.clearSkyPotentialKw * simulatedScale * 10) / 10,
+      energyKwh: Math.round(d.energyKwh * simulatedScale * 10) / 10,
     }));
-  }, [measuredCurve, dayData, capacityRatio]);
+  }, [measuredCurve, dayData, simulatedScale, multiplier]);
 
   const siteWeekData = useMemo(() => weekData.map((d) => ({
     ...d,
-    powerKw: Math.round(d.powerKw * capacityRatio * 10) / 10,
-    energyKwh: Math.round(d.energyKwh * capacityRatio * 10) / 10,
-  })), [weekData, capacityRatio]);
+    powerKw: Math.round(d.powerKw * simulatedScale * 10) / 10,
+    energyKwh: Math.round(d.energyKwh * simulatedScale * 10) / 10,
+  })), [weekData, simulatedScale]);
 
   const siteMonthData = useMemo(() => monthData.map((d) => ({
     ...d,
-    powerKw: Math.round(d.powerKw * capacityRatio * 10) / 10,
-    energyKwh: Math.round(d.energyKwh * capacityRatio * 10) / 10,
-  })), [monthData, capacityRatio]);
+    powerKw: Math.round(d.powerKw * simulatedScale * 10) / 10,
+    energyKwh: Math.round(d.energyKwh * simulatedScale * 10) / 10,
+  })), [monthData, simulatedScale]);
 
   const siteYearData = useMemo(() => yearData.map((d) => ({
     ...d,
-    energyKwh: Math.round(d.energyKwh * capacityRatio * 10) / 10,
-  })), [yearData, capacityRatio]);
+    energyKwh: Math.round(d.energyKwh * simulatedScale * 10) / 10,
+  })), [yearData, simulatedScale]);
 
   const currentDataset =
     selectedTimeRange === 'day' ? siteDayData :

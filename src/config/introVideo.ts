@@ -1,7 +1,7 @@
 /**
  * introVideo.ts
- * The clip, and the run of stills after it, that fill the screen before the
- * dashboard is handed to the room.
+ * The clip that fills the screen before the dashboard is handed to the room,
+ * and the short sound that plays as it is.
  *
  * The files live in `public/`, which Vite serves from the site root - so
  * `public/1.mp4` is `/1.mp4`. Swapping the intro is a one-line edit here; no
@@ -9,7 +9,7 @@
  *
  * Worth knowing about how this is staged (see IntroVideoOverlay.tsx): the
  * dashboard mounts BEHIND all of this rather than after it. The map's WebGL
- * context, its tiles and the first SolarEdge round all happen during the ~20
+ * context, its tiles and the first SolarEdge round all happen during the
  * seconds the audience is watching, so the overlay lifts onto a warm dashboard
  * instead of onto a grey map still fetching tiles.
  */
@@ -35,26 +35,24 @@ export interface IntroVideoConfig {
   /** 1 is the file's own speed. Same knob as SITE_MEDIA_SPEED in siteMedia.ts. */
   playbackRate: number;
   /**
-   * Photographs shown after the clip, in order, one every `stillDurationMs`.
+   * A short sound played ONCE as the dashboard takes over, or `null` for none.
    *
-   * Paths under the site root, same as `src` - `public/2.jpg` is `/2.jpg`.
-   * Reorder or drop a line to re-cut the montage; an empty list hands the
-   * clip straight to the dashboard.
+   * Starts with the fade rather than after it, so the sting lands over the
+   * dashboard appearing instead of a beat late. It outlives the overlay - see
+   * the module-scope handle in IntroVideoOverlay.tsx - so it may be longer than
+   * `fadeOutMs` without being cut off.
    *
-   * These are also the reason the whole overlay frames with `object-contain`:
-   * they are photographs of named people at the installations, and a montage
-   * that crops a head or a pair of feet off the bottom of a 72" screen at a
-   * ceremony is not a trade worth making for a full-bleed frame.
+   * Never loops. This is a punctuation mark on the intro, and a venue screen
+   * that repeats a sting behind a speaker is worse than one that stays quiet.
+   *
+   * Subject to the same autoplay policy as the clip: a browser that refused the
+   * video its sound will refuse this too, and it is skipped silently rather
+   * than retried. Pressing the skip button IS a gesture, so a manual skip
+   * always gets it.
    */
-  stills: string[];
-  /**
-   * Airtime per still.
-   *
-   * Hard cuts, no cross-fade: at half a second even a 150ms dissolve spends a
-   * third of every slide mid-blend, which turns a montage into a smear. The
-   * only fade is the last one, out to the dashboard.
-   */
-  stillDurationMs: number;
+  outroSoundSrc: string | null;
+  /** 0..1, for a file mastered louder than the room needs. */
+  outroSoundVolume: number;
   /**
    * Play only on the first load of a browser session (survives reloads in the
    * same tab; a freshly opened window counts as new).
@@ -69,17 +67,15 @@ export interface IntroVideoConfig {
    */
   showOncePerSession: boolean;
   /**
-   * Give up on the clip and move on to the stills if not a single frame has
-   * played by then.
+   * Give up on the clip and hand over to the dashboard if not a single frame
+   * has played by then.
    *
    * A missing or undecodable file must cost a few seconds, never the event: a
    * black rectangle stuck over a live dashboard is the one failure mode here
-   * that an operator cannot talk their way out of. Falling through to the
-   * stills rather than straight to the dashboard means a bad video file
-   * degrades the intro instead of erasing it.
+   * that an operator cannot talk their way out of.
    */
   startTimeoutMs: number;
-  /** Cross-fade from the last still (or the last video frame) to the dashboard. */
+  /** Cross-fade from the last video frame to the dashboard. */
   fadeOutMs: number;
 }
 
@@ -88,8 +84,8 @@ export const INTRO_VIDEO: IntroVideoConfig = {
   src: '/1.mp4',
   withSound: true,
   playbackRate: 1,
-  stills: ['/2.jpg', '/3.jpg', '/4.jpg', '/5.jpg', '/6.jpg', '/7.jpg', '/8.jpg'],
-  stillDurationMs: 500,
+  outroSoundSrc: '/2.mp3',
+  outroSoundVolume: 1,
   showOncePerSession: false,
   startTimeoutMs: 6000,
   fadeOutMs: 700,
