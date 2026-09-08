@@ -207,9 +207,13 @@ export interface SiteDescriptor {
  *
  * The fallback capacities are only used if the API cannot be reached — the real
  * values below were read from /sites/{id} on 2026-09-07. Note that the three
- * หาดใหญ่ registrations REGISTER 1767.84 kWp between them against the 6411.82
+ * หาดใหญ่ registrations REGISTER 1767.84 kWp between them against the 5839.65
  * commissioned in src/config/siteCapacity.ts, which is the figure the board
  * prints; the gap is the part of the array that is still not readable.
+ *
+ * Do NOT sync these to siteCapacity.ts. They answer a different question —
+ * what SolarEdge has on file for a registration — and the disagreement above
+ * is the finding, not a drift to be tidied away.
  */
 export const SITE_REGISTRY: SiteDescriptor[] = [
   { siteId: 4956359, fallbackName: 'MEA Solar Roof - หาดใหญ่', fallbackPeakPowerKwp: 1500.0, fallbackCity: 'หาดใหญ่' },

@@ -227,7 +227,7 @@ export const LIVE_SITE_IDS = {
  * หาดใหญ่'s three SolarEdge registrations, in binding-modal field order.
  *
  * The campus array is split across three registrations, so a pin bound to
- * 4956359 alone reads only the first slice of it — 1500 of the 6411.82 kWp
+ * 4956359 alone reads only the first slice of it — 1500 of the 5839.65 kWp
  * recorded in siteCapacity.ts. All three are summed into the one pin.
  *
  * Order is load-bearing: index 0 is ID 1, the "primary" the legacy single-ID

@@ -146,17 +146,32 @@ is unchanged.
 
 ## Sites
 
-| # | Site | SolarEdge Site ID | Capacity |
+| # | Site | SolarEdge Site ID | Capacity (kWp) |
 | --- | --- | --- | --- |
-| 1 | สุราษฎร์ธานี | *not provisioned* | — |
-| 2 | ภูเก็ต | *not provisioned* | — |
-| 3 | ตรัง | `4821237` | 999.36 kWp |
-| 4 | หาดใหญ่ | `4956359`, `4956575`, `4956547` | 6411.82 kWp |
-| 5 | ปัตตานี | `4947126` | 1522.08 kWp |
+| 1 | สุราษฎร์ธานี | `4817295` | 996.75 |
+| 2 | ภูเก็ต | *not provisioned* | 972 |
+| 3 | ตรัง | `4821237` | 997.2 |
+| 4 | หาดใหญ่ | `4956359`, `4956575`, `4956547` | 5839.65 |
+| 5 | ปัตตานี | `4947126` | 2469.6 |
+| | **รวมทั้งหมด** | | **11,275.20** |
 
-Sites 1 and 2 have no SolarEdge site ID yet. They are deliberately left unbound:
-in live mode their pins read "ไม่มีข้อมูล" rather than showing a plausible
-invented figure. In mock mode they display simulated data like the others.
+Capacity is the as-built commissioned figure, held in
+[`src/config/siteCapacity.ts`](src/config/siteCapacity.ts) and revised on
+2026-09-08. It is a **specification**, not a measurement — a pin prints it
+whether or not an inverter is talking to us — so it is the one figure an
+unbound site still shows. The total is summed from that table by
+`totalFixedCapacityKwp`, not stored separately, so editing a row moves the
+headline with it.
+
+These are **not** the `peakPower` values SolarEdge holds against each
+registration. Those are in `worker/src/config.ts` as offline fallbacks, are
+documented in [worker/README.md](worker/README.md), and disagree on purpose —
+see the note under the หาดใหญ่ table below.
+
+ภูเก็ต has no SolarEdge site ID yet and is deliberately left unbound: in live
+mode its power, energy and CO2 read "ไม่มีข้อมูล" rather than showing a
+plausible invented figure, while its capacity still prints. In mock mode it
+displays simulated data like the others.
 
 หาดใหญ่'s array is split across **three** SolarEdge registrations:
 
@@ -171,7 +186,7 @@ figure it shows — power, energy, CO2 — is the sum across them. The default
 binding lives in `src/services/solarEdgeService.ts` (`HATYAI_SITE_IDS`); an
 operator can override it per pin from the binding modal, and that choice
 persists in localStorage. The capacity the board prints is still the commissioned
-6411.82 kWp from `src/config/siteCapacity.ts`, not the 1767.84 kWp these three
+5839.65 kWp from `src/config/siteCapacity.ts`, not the 1767.84 kWp these three
 register between them — the rest of the array is not readable through the API.
 
 ## Security
