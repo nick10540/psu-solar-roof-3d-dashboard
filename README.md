@@ -67,19 +67,72 @@ origin and the API key stays inside the backend container.
 > URL; SolarEdge retired that scheme, and the replacement credential cannot ship
 > in a browser bundle — so production now needs the backend container too.
 
-Create a `.env` next to `docker-compose.yml` with the backend secrets:
+Create a `.env` next to `docker-compose.yml` — copy [`.env.example`](.env.example)
+and fill in the two required secrets:
 
 ```bash
+# Who may open the dashboard at all (HTTP Basic auth, enforced by nginx).
+BASIC_AUTH_USER=psu
+BASIC_AUTH_PASSWORD=$(openssl rand -base64 18)
+
+# The SolarEdge Fleet API Key, used only inside the backend container.
 SOLAREDGE_API_KEY=your_fleet_api_key
 ```
 
-Then:
+Both are **required**: compose fails fast if either is missing, so the stack
+cannot come up with the board exposed or the backend blind. Then:
 
 ```bash
 docker compose up -d --build
 ```
 
-Open http://localhost:3001. Stop with `docker compose down`.
+Open http://localhost:3001 and enter the credentials. Stop with
+`docker compose down`.
+
+### Access control
+
+nginx applies Basic auth at **server** level, so it covers the SPA, the hashed
+assets, the service worker and the `/api/solaredge` proxy in one place — a
+location added to `docker/nginx.conf` later is protected by default. `/healthz`
+is the only exempt path, because docker's healthcheck sends no credentials and
+the response is a fixed `ok`.
+
+The credentials never enter an image layer or git: they arrive through the
+compose environment and
+[`docker/docker-entrypoint.d/25-basic-auth.sh`](docker/docker-entrypoint.d/25-basic-auth.sh)
+turns them into `/etc/nginx/.htpasswd` at container start. With none set, that
+script exits non-zero and nginx never serves a byte — an unprotected dashboard
+is not an available failure mode.
+
+| Variable | | Purpose |
+| --- | --- | --- |
+| `BASIC_AUTH_USER` | required | Username |
+| `BASIC_AUTH_PASSWORD` | required | Password, hashed at start-up (apr1) |
+| `BASIC_AUTH_REALM` | optional | Text in the browser's password prompt |
+| `BASIC_AUTH_ALLOW_IPS` | optional | Comma-separated CIDRs that skip the prompt |
+| `BASIC_AUTH_HTPASSWD` | optional | Pre-hashed line(s); wins over user/password |
+
+`BASIC_AUTH_ALLOW_IPS` is there for the kiosk: give it the TV PC's address and
+the 72" board comes back up unattended after a power cut, while the same URL
+still asks everyone else for the password. It matches the **direct peer**
+(`$remote_addr`), not `X-Forwarded-For` — so if another reverse proxy is ever
+put in front of this container, every request will arrive from that proxy's
+address and an entry covering it would wave everyone through unauthenticated.
+Leave it empty in that setup.
+
+Changing the password is `docker compose up -d --force-recreate
+psu-solar-roof-dashboard` — the hash is rebuilt on every start, so no rebuild
+is needed.
+
+> **Basic auth sends the password on every request, base64-encoded, not
+> encrypted.** On the campus LAN behind nginx that is the intended trade for a
+> board that any browser can open with no session state. If this ever gets a
+> public hostname, put TLS in front of it first.
+
+The dev server can use the same gate: `npm run dev` binds `0.0.0.0`, so setting
+`BASIC_AUTH_USER` and `BASIC_AUTH_PASSWORD` in the environment makes Vite ask
+for them too (see `basicAuth()` in `vite.config.ts`). Unset, local development
+is unchanged.
 
 ## Scripts
 
@@ -123,6 +176,11 @@ register between them — the rest of the array is not readable through the API.
 
 ## Security
 
+- **The dashboard is behind HTTP Basic auth**, applied by nginx to the whole
+  origin. See [Access control](#access-control) for the variables and the
+  reasoning; the short version is that `BASIC_AUTH_USER` and
+  `BASIC_AUTH_PASSWORD` are required and the container will not start without
+  them.
 - **Never put credentials under `public/`.** Vite copies that directory
   verbatim into `dist/`, so anything there is served to the open internet.
   The API key belongs in `worker/.dev.vars` (gitignored) or, for Docker, the

@@ -11,8 +11,27 @@ services:
     depends_on:
       - solaredge-backend
     restart: unless-stopped
+    environment:
+      # HTTP Basic auth, applied by nginx to this whole origin - the SPA and
+      # the /api/solaredge proxy alike. Required, not optional: the container's
+      # entrypoint refuses to start without it, so the dashboard cannot be
+      # published to the venue network unprotected because someone forgot a
+      # line in .env. See docker/docker-entrypoint.d/25-basic-auth.sh.
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?set BASIC_AUTH_USER in .env}
+      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:?set BASIC_AUTH_PASSWORD in .env}
+      # Shown in the browser's password prompt.
+      BASIC_AUTH_REALM: ${BASIC_AUTH_REALM:-PSU Solar Roof Dashboard}
+      # Optional, comma-separated CIDRs that skip the prompt entirely - meant
+      # for the kiosk PC, so the 72" TV comes back up unattended after a power
+      # cut. Everyone else still needs the password. Empty = no exemptions.
+      BASIC_AUTH_ALLOW_IPS: ${BASIC_AUTH_ALLOW_IPS:-}
+      # Optional pre-hashed htpasswd line(s); wins over USER/PASSWORD above.
+      # The way to use bcrypt, or more than one account.
+      BASIC_AUTH_HTPASSWD: ${BASIC_AUTH_HTPASSWD:-}
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/"]
+      # /healthz, not /: it is the one path nginx leaves unauthenticated, and
+      # wget carries no credentials, so probing / would report 401 for ever.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

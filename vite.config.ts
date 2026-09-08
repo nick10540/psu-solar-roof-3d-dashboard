@@ -1,8 +1,77 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { createHash, timingSafeEqual } from 'crypto';
 import { readFileSync } from 'fs';
+import type { IncomingMessage, ServerResponse } from 'http';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
+
+/**
+ * HTTP Basic auth for the dev and preview servers.
+ *
+ * Production is gated by nginx instead - docker/nginx.conf includes an
+ * .htpasswd built at container start, which covers the SPA and the
+ * /api/solaredge proxy in one place and is where the dashboard is actually
+ * exposed. This plugin exists because `npm run dev` binds 0.0.0.0 (see the
+ * `dev` script), so a dev server running at the venue is reachable by anyone
+ * on that network. It reads the same BASIC_AUTH_USER / BASIC_AUTH_PASSWORD
+ * names as docker-compose.yml, so there is one set of credentials to know.
+ *
+ * Opt-in here, unlike the container, which refuses to start without
+ * credentials: leaving the variables unset keeps localhost development exactly
+ * as it was. Set both to switch it on.
+ *
+ * Not equivalent to the nginx gate, and not meant to be: Vite's HMR WebSocket
+ * is upgraded before any connect middleware runs, so it stays open. This
+ * closes the HTTP surface - it is hardening for a dev server on a hostile
+ * network, not a way to serve the dashboard from one.
+ */
+function basicAuth(): Plugin {
+  const user = process.env.BASIC_AUTH_USER || '';
+  const password = process.env.BASIC_AUTH_PASSWORD || '';
+  const realm = process.env.BASIC_AUTH_REALM || 'PSU Solar Roof Dashboard';
+
+  const expected = `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`;
+
+  /**
+   * Compare in constant time.
+   *
+   * Digested first because timingSafeEqual throws outright on a length
+   * mismatch - which both leaks the credential's length and turns a wrong
+   * password into a 500. Two SHA-256 digests are always 32 bytes.
+   */
+  const digest = (value: string) => createHash('sha256').update(value).digest();
+  const matches = (header: string) => timingSafeEqual(digest(header), digest(expected));
+
+  const guard = (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const header = req.headers.authorization;
+    if (typeof header === 'string' && matches(header)) return next();
+
+    res.statusCode = 401;
+    // charset="UTF-8" so a non-ASCII password is submitted as UTF-8 rather
+    // than the browser's guess at a legacy encoding.
+    res.setHeader('WWW-Authenticate', `Basic realm="${realm}", charset="UTF-8"`);
+    res.end('401 Unauthorized\n');
+  };
+
+  return {
+    name: 'mea-basic-auth',
+
+    configureServer(server) {
+      if (!user || !password) return;
+      // Registered from configureServer without the returned-thunk form, so it
+      // lands BEFORE Vite's own middlewares and nothing - not the transformed
+      // modules, not the /api/solaredge proxy - answers unauthenticated. This
+      // plugin is first in the plugins array for the same reason.
+      server.middlewares.use(guard);
+    },
+
+    configurePreviewServer(server) {
+      if (!user || !password) return;
+      server.middlewares.use(guard);
+    },
+  };
+}
 
 /**
  * MapLibre's worker.
@@ -70,7 +139,9 @@ function maplibreWorkerAssets(): Plugin {
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss(), maplibreWorkerAssets()],
+    // basicAuth() first: plugin order is middleware order, and the gate has to
+    // sit in front of maplibreWorkerAssets(), which also serves files.
+    plugins: [basicAuth(), react(), tailwindcss(), maplibreWorkerAssets()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
