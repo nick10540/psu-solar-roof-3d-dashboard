@@ -5,7 +5,7 @@
  * Deliberately NOT read from SolarEdge. `peakPower` from `/sites/{id}` is an
  * extra dependency on a call whose budget matters, and the number it returns is
  * a registration value that can disagree with what was actually built - หาดใหญ่
- * reports 1500 there against the 6411.82 commissioned on site.
+ * reports 1500 there against the 5839.65 commissioned on site.
  *
  * Showing this while a pin has no live reading is not the same class of problem
  * as showing invented production. Capacity is a SPECIFICATION: it is true
@@ -16,13 +16,19 @@
  * reassigned when a pin is deleted and re-added, the code stays with the site.
  */
 
-/** Site `code` -> installed capacity in kWp. */
+/**
+ * Site `code` -> installed capacity in kWp.
+ *
+ * Revised to the as-built figures on 2026-09-08. They sum to 11,275.20 kWp,
+ * which is the total the board prints — `totalFixedCapacityKwp` adds these up,
+ * so the headline follows this table and is not stored anywhere separately.
+ */
 const SITE_CAPACITY_KWP: Record<string, number> = {
-  'MEA-SRT-01': 649.79, // วิทยาเขตสุราษฎร์ธานี
-  'MEA-PKT-02': 784.44, // วิทยาเขตภูเก็ต
-  'MEA-TRG-03': 998.2, // วิทยาเขตตรัง
-  'MEA-HDY-04': 6411.82, // วิทยาเขตหาดใหญ่
-  'MEA-PTN-05': 2579.2, // วิทยาเขตปัตตานี
+  'MEA-SRT-01': 996.75, // วิทยาเขตสุราษฎร์ธานี
+  'MEA-PKT-02': 972, // วิทยาเขตภูเก็ต
+  'MEA-TRG-03': 997.2, // วิทยาเขตตรัง
+  'MEA-HDY-04': 5839.65, // วิทยาเขตหาดใหญ่
+  'MEA-PTN-05': 2469.6, // วิทยาเขตปัตตานี
 };
 
 /**
