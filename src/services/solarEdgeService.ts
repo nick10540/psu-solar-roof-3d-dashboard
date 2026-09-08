@@ -170,6 +170,19 @@ async function fetchBackend(
     );
   }
 
+  // HTTP Basic auth (docker/nginx.conf) guards this path too, and a 401 here
+  // means the browser's cached credentials went stale — nginx restarted with a
+  // new password, say. fetch() does not raise the password prompt that a
+  // navigation would, so the poll just fails. Caught ahead of the
+  // content-type check below because that check would blame worker/ for an
+  // nginx 401 page and send whoever is on shift to the wrong container.
+  if (res.status === 401 || res.status === 403) {
+    throw new BackendError(
+      `ต้องยืนยันตัวตนก่อนเข้าใช้ backend (HTTP ${res.status}) — รีโหลดหน้าเว็บแล้วกรอกชื่อผู้ใช้/รหัสผ่านอีกครั้ง`,
+      res.status
+    );
+  }
+
   const contentType = res.headers.get('content-type') || '';
   if (!contentType.includes('json')) {
     throw new BackendError(
@@ -917,6 +930,14 @@ export async function fetchBackendHealth(
       headers: { Accept: 'application/json' },
       signal: options.signal,
     });
+
+    // Same reasoning as in fetchBackend: an nginx 401 is not a worker/ fault,
+    // and this is the panel an operator opens to find out what is wrong.
+    if (res.status === 401 || res.status === 403) {
+      return unreachableBackend(
+        `ต้องยืนยันตัวตนก่อนเข้าใช้ backend (HTTP ${res.status}) — รีโหลดหน้าเว็บแล้วกรอกชื่อผู้ใช้/รหัสผ่านอีกครั้ง`
+      );
+    }
 
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('json')) {
