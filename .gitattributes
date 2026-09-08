@@ -1,0 +1,9 @@
+# This repo is developed on Windows with core.autocrlf=true, which rewrites
+# checked-out files to CRLF. For anything that a Linux container executes that
+# is fatal and the error is unhelpful: `#!/bin/sh\r` makes the kernel look for
+# an interpreter literally named "sh\r", and the container dies with
+# "no such file or directory" while pointing at a file that plainly exists.
+#
+# docker/docker-entrypoint.d/25-basic-auth.sh is exactly that case - without
+# this rule the dashboard container fails to start on a fresh clone.
+*.sh text eol=lf
