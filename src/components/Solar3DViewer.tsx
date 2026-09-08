@@ -73,6 +73,8 @@ import {
   markerCardOffsetFor,
   markerMediaHeightFor,
 } from '../config/markerTypography';
+import { hudZoomOffset } from '../config/hudScale';
+import { useHudScale } from '../hooks/useHudScale';
 import { resolveSiteMediaPlaylist, resolveSiteMediaSpeed } from '../config/siteMedia';
 import {
   RotateCcw,
@@ -111,6 +113,15 @@ interface Solar3DViewerProps {
 interface MarkerHandle {
   marker: maplibregl.Marker;
   root: HTMLDivElement;
+  /**
+   * Wrapper that carries the responsive HUD scale, and nothing else.
+   *
+   * Its own element because the two neighbours are both taken: MapLibre
+   * rewrites `root`'s transform on every frame of a pan, and `inner`'s comes
+   * from the class string patchMarker assigns wholesale (the selected/hover
+   * pop). This one is written only by `applyHudScale`.
+   */
+  hudScaleEl: HTMLElement;
   inner: HTMLElement;
   cardWrap: HTMLElement;
   card: HTMLElement;
@@ -205,6 +216,14 @@ function createMarkerElement(site: BuildingInfo): {
   el.style.transform = 'translate(-50%, -100%)';
   el.id = `maplibre-marker-site-${site.id}`;
 
+  // The root keeps its full-size box while the HUD scale shrinks what is drawn
+  // inside it, so at any scale below 1 there is bare root either side of the
+  // card. A transparent strip that swallows drags over a live MapLibre canvas
+  // is exactly the bug the header and control drawer are careful about, so hit
+  // testing is switched off here and back on for the two things meant to take
+  // a click. They still reach the listener on this element by bubbling.
+  el.style.pointerEvents = 'none';
+
   // Banner is omitted entirely when the site has no file, rather than left as
   // an empty box. Nothing here interpolates site-supplied text - names reach
   // the DOM through textContent in patchMarker - so this stays injection-safe.
@@ -227,6 +246,7 @@ function createMarkerElement(site: BuildingInfo): {
     : '';
 
   el.innerHTML = `
+    <div data-mea="hudScale" class="origin-bottom">
     <div data-mea="inner" class="relative flex flex-col items-center group">
       <!-- 1. Floating 3D Telemetry HUD Card -->
       <div data-mea="cardWrap" class="mb-1 w-full" style="pointer-events:auto;${cardShift}">
@@ -310,13 +330,14 @@ function createMarkerElement(site: BuildingInfo): {
       </div>
 
       <!-- 2. Google Earth Style 3D Blue Pin -->
-      <div class="relative flex flex-col items-center cursor-pointer">
+      <div class="relative flex flex-col items-center cursor-pointer pointer-events-auto">
         <div class="w-7 h-7 rounded-full bg-gradient-to-tr from-sky-700 via-blue-500 to-cyan-300 border-2 border-white shadow-[0_0_15px_rgba(14,165,233,0.9)] flex items-center justify-center text-white font-bold font-mono" style="font-size:${s(MARKER_FONT_SIZES.pinNumber)}px">
           <span data-mea="pinId"></span>
         </div>
         <div class="w-1 h-4 bg-gradient-to-b from-blue-300 via-sky-500 to-sky-700 shadow-sm"></div>
         <div class="w-4 h-2 rounded-full bg-sky-400/80 mea-ground-ring"></div>
       </div>
+    </div>
     </div>
   `;
 
@@ -384,6 +405,7 @@ function createMarkerElement(site: BuildingInfo): {
   return {
     el,
     refs: {
+      hudScaleEl: pick('hudScale'),
       inner: pick('inner'),
       cardWrap: pick('cardWrap'),
       card: pick('card'),
@@ -404,6 +426,26 @@ function createMarkerElement(site: BuildingInfo): {
       videoEl,
     },
   };
+}
+
+/**
+ * Sizes a marker for the current viewport - see config/hudScale.ts.
+ *
+ * One transform on one wrapper, rather than rebuilding the card at smaller px:
+ * the card's padding, gaps, corner radii, tail and pin all come from utility
+ * classes, so multiplying the font sizes would leave the type shrinking inside
+ * a box that did not. Scaling from `origin-bottom` keeps the bottom edge of
+ * the marker - the pin's point, which is what MapLibre anchors to the site's
+ * coordinate - exactly where it was.
+ *
+ * At scale 1 the transform is removed rather than set to `scale(1)`, so the
+ * presentation view has no extra compositor layer per marker.
+ */
+function applyHudScale(handle: MarkerHandle, hudScale: number): void {
+  const next = hudScale === 1 ? '' : `scale(${hudScale})`;
+  if (handle.hudScaleEl.style.transform !== next) {
+    handle.hudScaleEl.style.transform = next;
+  }
 }
 
 /**
@@ -565,6 +607,20 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<Map<number, MarkerHandle>>(new Map());
 
+  /**
+   * How much smaller than the reference panel this viewport is - 1 in
+   * fullscreen and at the reference size, less in a window. See
+   * config/hudScale.ts.
+   */
+  const hudScale = useHudScale();
+  /**
+   * The same value where the map lifecycle can read it. The init effect must
+   * not take a dependency on it: a resize would then tear down the MapLibre
+   * instance, its WebGL context and its whole tile cache (stability contract
+   * item 1 at the top of this file).
+   */
+  const hudScaleRef = useRef<number>(hudScale);
+
   const orbitRafRef = useRef<number | null>(null);
   const cameraRafRef = useRef<number | null>(null);
   const lastBadgeSyncRef = useRef<number>(0);
@@ -647,7 +703,12 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       // requests the right tiles from the start, and the audience never sees
       // it open on the wide shot and then snap somewhere else.
       center: restored?.center ?? REGIONAL_CENTER,
-      zoom: restored?.zoom ?? DEFAULT_ZOOM,
+      // A stored zoom - and DEFAULT_ZOOM itself - is always expressed at
+      // reference scale, i.e. the framing as it stands on the panel. What goes
+      // on the map is that same picture sized to this viewport, so a window
+      // opens on the whole region instead of on the middle of it with two
+      // sites and their cards pushed off the edges. Zero in fullscreen.
+      zoom: (restored?.zoom ?? DEFAULT_ZOOM) + hudZoomOffset(hudScaleRef.current),
       pitch: restored?.pitch ?? DEFAULT_PITCH,
       bearing: restored?.bearing ?? DEFAULT_BEARING,
 
@@ -724,7 +785,10 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       const c = map.getCenter();
       const next = normaliseCamera({
         center: [c.lng, c.lat],
-        zoom: map.getZoom(),
+        // Back out the viewport's zoom offset before writing, so the record
+        // stays a reference-scale framing whatever size the window was when
+        // the operator set it. Round-trips exactly against the init above.
+        zoom: map.getZoom() - hudZoomOffset(hudScaleRef.current),
         pitch: map.getPitch(),
         bearing: map.getBearing(),
       });
@@ -1139,12 +1203,36 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     if (!map) return;
     map.easeTo({
       center: REGIONAL_CENTER,
-      zoom: DEFAULT_ZOOM,
+      // Same offset the map is built with, or "reset" in a window would put
+      // back the framing only a fullscreen panel has room for.
+      zoom: DEFAULT_ZOOM + hudZoomOffset(hudScaleRef.current),
       pitch: DEFAULT_PITCH,
       bearing: DEFAULT_BEARING,
       duration: 900,
     });
   }, []);
+
+  // -------------------------------------------------------------------------
+  // Viewport changes: reframe, don't re-frame from scratch
+  //
+  // The window was resized, or fullscreen was entered or left. The stored
+  // camera is a reference-scale framing (see checkpointCamera), so the live
+  // camera only has to move by the DIFFERENCE between the old and new offsets
+  // - which keeps whatever the operator had panned to, at the size the new
+  // viewport can hold.
+  //
+  // `jumpTo`, not `easeTo`: MapLibre's own resize already snaps the frame, and
+  // animating a zoom on top of that reads as the map lurching.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    const previous = hudScaleRef.current;
+    hudScaleRef.current = hudScale;
+
+    const map = mapRef.current;
+    if (!map || previous === hudScale) return;
+
+    map.jumpTo({ zoom: map.getZoom() + hudZoomOffset(hudScale) - hudZoomOffset(previous) });
+  }, [hudScale]);
 
   // -------------------------------------------------------------------------
   // Auto orbit - requestAnimationFrame, not setInterval(50)
@@ -1242,6 +1330,9 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       // --- Patch: text nodes and class strings only ---
       const metrics = metricsById.get(site.id) ?? emptySiteMetrics(site.id);
       patchMarker(handle, site, selectedBuildingId === site.id, showPinCards, metrics);
+      // Sizing rides along here rather than in an effect of its own so a
+      // marker created after a resize is never drawn at full size first.
+      applyHudScale(handle, hudScale);
     });
 
     // --- Remove markers for buildings that no longer exist ---
@@ -1255,7 +1346,7 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     // is a 5-element loop and the work it does is textContent assignment.
     // The expensive part - innerHTML parsing and Marker construction - happens
     // once per site id, not once per tick.
-  }, [isMapCreated, buildings, metricsById, selectedBuildingId, showPinCards]);
+  }, [isMapCreated, buildings, metricsById, selectedBuildingId, showPinCards, hudScale]);
 
   // -------------------------------------------------------------------------
   // Age lines: advance on the clock, not on the data
@@ -1600,8 +1691,16 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
         masthead's PSU crest lands on anything narrower than ~1990px, and the
         band reads as sitting on the sea instead of clinging to the bezel.
         Below 1600px there is no room for that inset, so it returns to the edge.
+
+        Every measurement above is at the reference viewport, and the panel's
+        own type is sized off the featured pin card, so it takes the same HUD
+        scale the cards do (config/hudScale.ts) - and from the same corner it
+        is positioned by, so shrinking it cannot pull it off the right edge.
       */}
-      <div className="absolute right-3 min-[1600px]:right-[14rem] top-52 z-20 pointer-events-auto">
+      <div
+        className="absolute right-3 min-[1600px]:right-[14rem] top-52 z-20 pointer-events-auto origin-top-right"
+        style={hudScale === 1 ? undefined : { transform: `scale(${hudScale})` }}
+      >
         <RegionalTotalsPanel totals={totals} />
       </div>
 

@@ -11,7 +11,12 @@
  * instead, sourced from here, so every card on the map can be resized
  * dashboard-wide by editing one number in this file.
  *
- * Units: px.
+ * Units: px, at the reference viewport. Every number here - the font sizes,
+ * the card geometry and the per-site nudges at the bottom - is what the card
+ * measures on the ceremony panel. In a smaller window the whole card is drawn
+ * through one transform that shrinks it proportionally, so these stay the
+ * sizes to tune and none of them needs a breakpoint of its own. See
+ * config/hudScale.ts.
  */
 export const MARKER_FONT_SIZES = {
   /** Site name in the card header, e.g. "วิทยาเขตตรัง". */
@@ -154,6 +159,12 @@ export function featuredCardFontSizePx(key: keyof typeof MARKER_FONT_SIZES): num
  * These are tuned to the DEFAULT camera. Pan or zoom far from it and cards can
  * meet again — the alternative was shrinking the cards until nothing collided,
  * which costs the legibility the 72" panel was sized for.
+ *
+ * The three collisions above are the FULLSCREEN ones, and they are the reason
+ * config/hudScale.ts exists: in a window there is no 72" viewing distance to
+ * protect, so the cards are shrunk relative to the scene until exactly these
+ * pairs come apart. Nothing here needs to change for that - it is applied on
+ * top of these values, not instead of them.
  */
 export const MARKER_CARD_OFFSETS: Record<string, { dx: number; dy: number }> = {
   'MEA-PTN-05': { dx: 96, dy: 0 }, // ปัตตานี — step right of หาดใหญ่
