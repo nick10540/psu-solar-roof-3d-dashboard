@@ -11,7 +11,7 @@ import React from 'react';
 /**
  * 💡 MASTER SWITCH: Set this to `false` to remove/disable the watermark completely.
  */
-export const ENABLE_DEMO_WATERMARK = true;
+export const ENABLE_DEMO_WATERMARK = false;
 
 interface WatermarkProps {
   text?: string;
