@@ -30,6 +30,8 @@ import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { BuildingInfo } from '../types';
 import { RegionalTotalsPanel } from './RegionalTotalsPanel';
+import { HudFrame } from './HudFrame';
+import { HudScaleControl } from './HudScaleControl';
 import { ResolvedSiteMetrics, RegionalTotals, emptySiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA } from './metricDisplay';
 import { formatAgeThai, formatClockThai } from '../utils/relativeTime';
@@ -517,9 +519,16 @@ function patchMarker(
   });
   if (handle.energyUnitEl.textContent !== lifetime.unit) handle.energyUnitEl.textContent = lifetime.unit;
 
+  // No thousands separator here specifically: at 2 decimals a 4-digit capacity
+  // ("5,839.65", "2,469.60" - หาดใหญ่ and ปัตตานี, the only two sites over
+  // 1,000 kWp) is one character wider than this 3-up grid cell has ever had to
+  // hold, and overflows it by ~13px measured at the reference viewport. The
+  // digits and the decimals stay exactly as elsewhere on the board; only the
+  // comma is dropped, which is exactly the one character too many.
   animateNumberText(handle.capacityEl, metrics.capacityKwp, {
-    decimals: 0,
+    decimals: 2,
     placeholder: NO_DATA,
+    format: (v) => v.toFixed(2),
   });
 
   const co2 =
@@ -1510,6 +1519,18 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
               </button>
             </div>
 
+            {/* --- HUD scale trim ---
+                The operator's on-site +/- (config/hudScale.ts,
+                hooks/useHudScaleTrim.ts): the board already fits itself to
+                whatever screen it is on, and this is the manual nudge on top
+                of that automatic fit for the case no formula sees coming. */}
+            <div className="border-t border-slate-700/60 pt-2 flex flex-col gap-1">
+              <span className="text-[10px] font-mono text-slate-400 px-1">ขนาดการ์ดบนจอ</span>
+              <div className="flex justify-center">
+                <HudScaleControl />
+              </div>
+            </div>
+
             {/* --- Pitch presets --- */}
             <div className="border-t border-slate-700/60 pt-2 flex flex-col gap-1">
               <span className="text-[10px] font-mono text-slate-400 px-1">มุมเอียง</span>
@@ -1687,22 +1708,26 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
           ปัตตานี card starts      x 1433  -> stay above it, not beside it
           drawer handle            right edge, y 460-540 -> panel sits above
 
-        Inset from the right rather than pinned to it: the corner is where the
-        masthead's PSU crest lands on anything narrower than ~1990px, and the
-        band reads as sitting on the sea instead of clinging to the bezel.
-        Below 1600px there is no room for that inset, so it returns to the edge.
+        Inset from the right rather than pinned to it, at 224px (14rem) - the
+        corner is where the masthead's PSU crest lands, and the band reads as
+        sitting on the sea instead of clinging to the bezel. That inset used to
+        be conditional on a `min-[1600px]:` breakpoint, dropping to a plain
+        right-3 below it; inside <HudFrame> the reference frame is always
+        1904px, so that breakpoint always wins and the fallback is dead code -
+        see HudFrame.tsx for why a real-viewport breakpoint has no meaning once
+        nested in a box the frame itself is scaling as a whole.
 
-        Every measurement above is at the reference viewport, and the panel's
-        own type is sized off the featured pin card, so it takes the same HUD
-        scale the cards do (config/hudScale.ts) - and from the same corner it
-        is positioned by, so shrinking it cannot pull it off the right edge.
+        Everything else about the panel - its own type sized off the featured
+        pin card - is unchanged; only its wrapper moved from carrying its own
+        `scale(hudScale)` to sitting inside the shared frame below, which is
+        what now supplies that transform for the masthead, the clock and this
+        panel together.
       */}
-      <div
-        className="absolute right-3 min-[1600px]:right-[14rem] top-52 z-20 pointer-events-auto origin-top-right"
-        style={hudScale === 1 ? undefined : { transform: `scale(${hudScale})` }}
-      >
-        <RegionalTotalsPanel totals={totals} />
-      </div>
+      <HudFrame hudScale={hudScale} className="z-20">
+        <div className="absolute pointer-events-auto" style={{ right: 224, top: 208 }}>
+          <RegionalTotalsPanel totals={totals} />
+        </div>
+      </HudFrame>
 
     </div>
   );

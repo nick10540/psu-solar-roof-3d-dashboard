@@ -320,7 +320,7 @@ export const BuildingBindingModal: React.FC<BuildingBindingModalProps> = ({
                 <div className="p-2 rounded-xl bg-slate-900/70 border border-sky-500/20">
                   <span className="text-[10px] text-slate-400 block">กำลังติดตั้งรวม</span>
                   <span className="text-sm font-bold font-mono text-sky-300">
-                    {sum.capacityKwp.toFixed(0)} kWp
+                    {sum.capacityKwp.toFixed(2)} kWp
                   </span>
                 </div>
                 <div className="p-2 rounded-xl bg-slate-900/70 border border-sky-500/20">
@@ -397,7 +397,7 @@ export const BuildingBindingModal: React.FC<BuildingBindingModalProps> = ({
                 <div className="bg-slate-900/90 py-1.5 px-1 rounded-lg border border-sky-500/20">
                   <div className="text-[8.5px] text-slate-400 leading-none mb-1">กำลังติดตั้ง</div>
                   <div className="font-bold font-mono text-[11px] text-sky-300">
-                    {sum.capacityKwp > 0 ? sum.capacityKwp.toFixed(0) : '—'}
+                    {sum.capacityKwp > 0 ? sum.capacityKwp.toFixed(2) : '—'}
                     <span className="text-[8px] text-sky-400/80 font-normal ml-0.5">kWp</span>
                   </div>
                 </div>

@@ -98,6 +98,8 @@ import { SiteDetailSubpage } from './components/SiteDetailSubpage';
 import { HeaderBar } from './components/HeaderBar';
 import { CeremonyHero } from './components/CeremonyHero';
 import { CeremonyClock } from './components/CeremonyClock';
+import { HudFrame } from './components/HudFrame';
+import { useHudScale } from './hooks/useHudScale';
 import { BuildingDetailModal } from './components/BuildingDetailModal';
 import { SolarEdgeSettingsModal } from './components/SolarEdgeSettingsModal';
 import { BuildingBindingModal } from './components/BuildingBindingModal';
@@ -136,6 +138,12 @@ interface LoadOptions {
 export default function App() {
   // Navigation Mode: 'main-map' (5-site regional overview) vs 'site-detail' (sub-page)
   const [navigationMode, setNavigationMode] = useState<AppNavigationMode>('main-map');
+
+  // Responsive HUD scale for the ceremony masthead + clock (see
+  // config/hudScale.ts). A second instance of the same hook Solar3DViewer
+  // holds - both are pure derived state from the viewport and the operator's
+  // trim, so they always agree without any wiring between the two.
+  const hudScale = useHudScale();
 
   // Application State - 5 Regional Sites
   const [buildings, setBuildings] = useState<BuildingInfo[]>(() => loadActiveBuildings());
@@ -846,11 +854,16 @@ export default function App() {
           />
         )}
 
-        {/* Ceremony masthead — main map only; the site sub-page has its own header. */}
-        {navigationMode === 'main-map' && <CeremonyHero />}
-
-        {/* Digital clock, top-left of the map — same view as the masthead. */}
-        {navigationMode === 'main-map' && <CeremonyClock />}
+        {/* Ceremony masthead + clock — main map only; the site sub-page has its
+            own header. Both are laid out in reference px against a viewport
+            that never changes size (see HudFrame.tsx); this one wrapper is
+            what actually tracks the real window/display for them. */}
+        {navigationMode === 'main-map' && (
+          <HudFrame hudScale={hudScale} className="z-30">
+            <CeremonyHero />
+            <CeremonyClock />
+          </HudFrame>
+        )}
       </div>
 
       {/* 5. Modals */}

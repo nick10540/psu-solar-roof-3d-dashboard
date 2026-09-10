@@ -47,6 +47,14 @@ interface CountUpProps {
   decimals?: number;
   /** Rendered when `target` is not a usable number, e.g. an unbound site. */
   placeholder?: string;
+  /**
+   * Overrides the default thousands-separated formatting - mirrors
+   * `AnimateNumberTextOptions.format` in utils/animateNumber.ts, the same
+   * escape hatch for the map's marker cards, which can't use this component.
+   * For the rare fixed-width box a grouped separator makes one character too
+   * wide for (see RegionalTotalsPanel's hero figure).
+   */
+  format?: (value: number) => string;
   className?: string;
 }
 
@@ -55,6 +63,7 @@ export const CountUp: React.FC<CountUpProps> = ({
   duration = 900,
   decimals,
   placeholder = '—',
+  format,
   className,
 }) => {
   const isValid = typeof target === 'number' && Number.isFinite(target);
@@ -132,5 +141,7 @@ export const CountUp: React.FC<CountUpProps> = ({
     return <span className={className}>{placeholder}</span>;
   }
 
-  return <span className={className}>{formatNumber(displayed, places)}</span>;
+  return (
+    <span className={className}>{format ? format(displayed) : formatNumber(displayed, places)}</span>
+  );
 };

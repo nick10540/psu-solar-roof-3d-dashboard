@@ -49,7 +49,11 @@ export function totalInstalledKwp(sites: Array<{ capacityKwp: number }>): number
 export const INITIAL_SOLAREDGE_CONFIG: SolarEdgeConfig = {
   isConnected: false,
   siteId: 'MEA-SOLAR-2026',
-  useMock: true,
+  // Live API by default: this board runs at a live event against real
+  // SolarEdge readings, not the simulator. A fresh browser profile (or one
+  // whose localStorage was cleared) now opens the same way an operator would
+  // set it up by hand from the settings modal.
+  useMock: false,
   lastSyncTime: '21 ส.ค. 2569 10:30:00',
   pollIntervalSec: 15,
   showSiteEditTools: false,

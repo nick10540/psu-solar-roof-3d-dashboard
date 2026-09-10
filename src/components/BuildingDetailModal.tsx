@@ -369,7 +369,7 @@ export const BuildingDetailModal: React.FC<BuildingDetailModalProps> = ({
               กำลังติดตั้งรวม
             </span>
             <div className={`text-xl font-bold font-mono mt-1 ${tone('text-amber-300')}`}>
-              <CountUp target={metrics.capacityKwp} decimals={0} placeholder={NO_DATA} />
+              <CountUp target={metrics.capacityKwp} decimals={2} placeholder={NO_DATA} />
               {metrics.capacityKwp !== null && (
                 <span className="text-xs text-slate-400 font-sans"> kWp</span>
               )}

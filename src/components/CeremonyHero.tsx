@@ -21,6 +21,14 @@
  *    is the scarce resource up here: title + logos already run past 1200px,
  *    and the totals panel owns the top-right 352px, so the panel drops below
  *    the masthead under ~1990px rather than being covered (Solar3DViewer).
+ *  - Rendered inside <HudFrame>, a box that is ALWAYS 1904px wide (App.tsx) -
+ *    so every size below is written as the ONE value it used to resolve to at
+ *    that width, not as a breakpoint ladder. A `sm:`/`xl:`/`2xl:` variant
+ *    reacts to the REAL browser viewport, which is exactly the wrong thing
+ *    once this markup sits inside a box HudFrame scales as a whole to fit that
+ *    viewport: at a real width below the ladder's top breakpoint the variant
+ *    would silently stop applying even though, at reference size, it always
+ *    should. See HudFrame.tsx for the reasoning in full.
  */
 
 import React from 'react';
@@ -29,9 +37,9 @@ export const CeremonyHero: React.FC = () => {
   return (
     <div
       id="ceremony-hero"
-      className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-4 pt-2.5"
+      className="pointer-events-none absolute inset-x-0 top-0 flex justify-center px-4 pt-2.5"
     >
-      <div className="flex items-center gap-2 sm:gap-3 rounded-2xl bg-slate-950/55 px-3 py-1.5 backdrop-blur-[2px]">
+      <div className="flex items-center gap-3 rounded-2xl bg-slate-950/55 px-3 py-1.5 backdrop-blur-[2px]">
         {/*
           MEA on the left, PSU on the right, both larger than before.
 
@@ -49,19 +57,20 @@ export const CeremonyHero: React.FC = () => {
         <img
           src="/logos/mea-logo.png"
           alt="ตราสัญลักษณ์การไฟฟ้านครหลวง"
-          className="h-16 sm:h-20 xl:h-28 2xl:h-32 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)]"
+          className="h-32 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)]"
         />
 
         {/* Sizes are written out in px because the ask was literally "+2px"
-            at every step: 16→18, 20→22, 30→32. */}
-        <h1 className="text-[18px] sm:text-[22px] xl:text-[32px] font-black tracking-wide whitespace-nowrap text-white drop-shadow-[0_3px_12px_rgba(0,0,0,0.95)] font-['Prompt',sans-serif]">
+            at every step: 16→18, 20→22, 30→32 - frozen here at the top of that
+            ladder, 32px, since the reference frame is always wide enough for it. */}
+        <h1 className="text-[32px] font-black tracking-wide whitespace-nowrap text-white drop-shadow-[0_3px_12px_rgba(0,0,0,0.95)] font-['Prompt',sans-serif]">
           ระบบผลิตไฟฟ้าพลังงานแสงอาทิตย์ มหาวิทยาลัยสงขลานครินทร์
         </h1>
 
         <img
           src="/logos/right-logo.png"
           alt="ตราสัญลักษณ์มหาวิทยาลัยสงขลานครินทร์"
-          className="h-16 sm:h-20 xl:h-28 2xl:h-32 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)] -mx-6 sm:-mx-8 xl:-mx-11 2xl:-mx-12"
+          className="h-32 w-auto object-contain drop-shadow-[0_2px_10px_rgba(0,0,0,0.85)] -mx-12"
         />
       </div>
     </div>

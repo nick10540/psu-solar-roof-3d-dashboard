@@ -66,7 +66,7 @@ export const DeleteBuildingDialog: React.FC<DeleteBuildingDialogProps> = ({
           <div className="pt-2 border-t border-rose-500/20 grid grid-cols-2 gap-2 text-[11px] font-mono">
             <div>
               <span className="text-slate-400 block text-[10px]">กำลังติดตั้ง:</span>
-              <span className="text-amber-300 font-bold">{building.capacityKwp} kWp</span>
+              <span className="text-amber-300 font-bold">{building.capacityKwp.toFixed(2)} kWp</span>
             </div>
             <div>
               <span className="text-slate-400 block text-[10px]">พิกัด GPS:</span>

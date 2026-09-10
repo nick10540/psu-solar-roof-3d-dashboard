@@ -571,7 +571,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
             <ShieldCheck className="w-4 h-4 text-blue-400" />
           </div>
           <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight flex items-baseline gap-1">
-            <span className={valueTone}><CountUp target={capacityKwp} decimals={0} placeholder={NO_DATA} /></span>
+            <span className={valueTone}><CountUp target={capacityKwp} decimals={2} placeholder={NO_DATA} /></span>
             {capacityKwp !== null && (
               <span className="text-xs font-normal text-blue-300/80">kWp</span>
             )}

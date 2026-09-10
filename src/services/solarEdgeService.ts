@@ -1052,11 +1052,14 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
     if (!raw) {
       // Default bindings.
       //
-      // Only the four buildings with a real SolarEdge site ID are bound.
-      // ภูเก็ต (2) has no site provisioned yet, so binding it to a placeholder
-      // would put invented numbers on stage under a "Live API" badge. Unbound,
-      // it renders "ไม่มีข้อมูล" in live mode and still shows its simulated
-      // figures in mock mode.
+      // ภูเก็ต (2) has no SolarEdge site of its own provisioned yet, so - for
+      // now - it borrows ปัตตานี's live reading (LIVE_SITE_IDS.PATTANI) rather
+      // than staying unbound. siteMultiplier.ts already carries the ratio this
+      // depends on ('MEA-PKT-02': 0.304, ภูเก็ต/ปัตตานี), so the shared reading
+      // is scaled down to what ภูเก็ต's own, much smaller installation would
+      // actually produce before it ever reaches the card. This is a stand-in,
+      // not a fix: swap it for ภูเก็ต's own site ID in LIVE_SITE_IDS the moment
+      // that meter is registered, and revisit the multiplier at the same time.
       //
       // These are only a starting point now: the operator can type any IDs into
       // the binding modal, up to MAX_SITE_IDS_PER_BUILDING per pin, and that
@@ -1080,6 +1083,9 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
 
       return {
         1: seed(1, [LIVE_SITE_IDS.SURAT], 'MEA Solar Roof - สุราษฎร์ธานี'),
+        // Placeholder: ปัตตานี's site ID, scaled by siteMultiplier.ts - see the
+        // comment above.
+        2: seed(2, [LIVE_SITE_IDS.PATTANI], 'MEA Solar Roof - ภูเก็ต (ชั่วคราว, อ้างอิงปัตตานี)'),
         3: seed(3, [LIVE_SITE_IDS.TRANG], 'MEA Solar Roof - ตรัง'),
         4: seed(4, HATYAI_SITE_IDS, 'MEA Solar Roof - หาดใหญ่'),
         5: seed(5, [LIVE_SITE_IDS.PATTANI], 'MEA Solar Roof - ปัตตานี'),
