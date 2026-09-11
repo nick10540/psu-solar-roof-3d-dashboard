@@ -519,16 +519,9 @@ function patchMarker(
   });
   if (handle.energyUnitEl.textContent !== lifetime.unit) handle.energyUnitEl.textContent = lifetime.unit;
 
-  // No thousands separator here specifically: at 2 decimals a 4-digit capacity
-  // ("5,839.65", "2,469.60" - หาดใหญ่ and ปัตตานี, the only two sites over
-  // 1,000 kWp) is one character wider than this 3-up grid cell has ever had to
-  // hold, and overflows it by ~13px measured at the reference viewport. The
-  // digits and the decimals stay exactly as elsewhere on the board; only the
-  // comma is dropped, which is exactly the one character too many.
   animateNumberText(handle.capacityEl, metrics.capacityKwp, {
     decimals: 2,
     placeholder: NO_DATA,
-    format: (v) => v.toFixed(2),
   });
 
   const co2 =

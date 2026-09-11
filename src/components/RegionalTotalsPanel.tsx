@@ -132,7 +132,7 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
   const partial = hasData && sitesWithData < siteCount;
 
   return (
-    <div className="glass-panel-static rounded-2xl border border-sky-500/30 shadow-2xl px-4 py-3 w-[656px]">
+    <div className="glass-panel-static rounded-2xl border border-sky-500/30 shadow-2xl px-4 py-3 w-[678px]">
       {/* Header: name the data source, so nobody has to guess what they are looking at */}
       <div className="flex items-center justify-between gap-3 pb-2 mb-2.5 border-b border-slate-700/60">
         <span
@@ -184,7 +184,7 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
       {/* Body: hero on the left, the four secondary figures 2x2 to its right. */}
       <div className="flex items-stretch gap-2">
         {/* Hero: total installed capacity */}
-        <div className="bg-gradient-to-b from-sky-950/80 to-slate-900/70 rounded-xl border border-sky-500/25 px-3 py-2 w-[250px] shrink-0 flex flex-col justify-center">
+        <div className="bg-gradient-to-b from-sky-950/80 to-slate-900/70 rounded-xl border border-sky-500/25 px-3 py-2 w-[272px] shrink-0 flex flex-col justify-center">
           <div
             className="flex items-center gap-1.5 text-slate-400 leading-none mb-2"
             style={{ fontSize: FONT_PX.label }}
@@ -204,11 +204,6 @@ const RegionalTotalsPanelImpl: React.FC<RegionalTotalsPanelProps> = ({ totals })
                   target={capacityKwp}
                   decimals={2}
                   duration={1100}
-                  // No thousands separator here specifically: at 2 decimals a
-                  // 5-digit total ("11,275.20") is one character wider than
-                  // this fixed hero box has room for - see the marker card's
-                  // identical fix in Solar3DViewer.tsx's patchMarker.
-                  format={(v) => v.toFixed(2)}
                 />
               )}
             </span>

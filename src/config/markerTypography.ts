@@ -59,10 +59,25 @@ export const MARKER_FONT_SIZES = {
  * Tailwind class). It has to clear the widest metric cell: a value at
  * `metricValue` plus its unit at `metricUnit` on one nowrap line, three across.
  * Undersizing it clips the numbers rather than wrapping them.
+ *
+ * 420, not the original 320: with a thousands separator restored on every
+ * metric (energy and capacity both print grouped digits - "2,469.60", not
+ * "2469.60"), the widest realistic reading in a 1-of-3 cell needs more room
+ * than 320 has to give. Measured empirically, not calculated from character
+ * counts, because canvas/DOM text-metric estimates disagreed with real layout
+ * by 15-20px in this exact file's own testing:
+ *   - capacity up to "5,839.65 kWp" (หาดใหญ่, the featured card) needed the
+ *     cell 11px wider than 320 gave it, at zero margin.
+ *   - lifetime energy is a one-way accumulator that only ever grows; even
+ *     today's "435,800 kWh"-scale readings were within a few px of the same
+ *     wall, worse on the featured card.
+ * 420 clears both with several px of real margin (re-verified the same way,
+ * not estimated) rather than reopening this the next time either figure grows
+ * a digit.
  */
 export const MARKER_CARD = {
   /** Outer marker box. The card centres inside it and self-sizes to its metrics. */
-  widthPx: 320,
+  widthPx: 420,
   /**
    * Height of the photo / video banner at the top of the card.
    *
@@ -104,12 +119,14 @@ export function markerScaleFor(siteCode: string): number {
  * 120px banner is 2.67:1 while the clips are 16:9, which was cutting a third
  * off the top and bottom of every frame.
  *
- * 180 is exactly 16:9 of 320, so หาดใหญ่'s clips fill the banner with nothing
- * trimmed and no bars. It does cost card height, and mediaHeightPx's note
- * applies - those px overlap the site to the north.
+ * 236 is exactly 16:9 of widthPx (420), so หาดใหญ่'s clips fill the banner
+ * with nothing trimmed and no bars - recomputed to stay exactly 16:9 when
+ * widthPx moved from 320 to 420 (see MARKER_CARD's own comment). It does cost
+ * card height, and mediaHeightPx's note applies - those px overlap the site
+ * to the north.
  */
 const MEDIA_HEIGHT_OVERRIDE_PX: Record<string, number> = {
-  'MEA-HDY-04': 180, // 16:9 of widthPx, so the footage is shown whole
+  'MEA-HDY-04': 236, // 16:9 of widthPx, so the footage is shown whole
 };
 
 /**
