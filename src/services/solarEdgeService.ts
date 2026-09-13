@@ -23,7 +23,7 @@
  * 5. AbortSignal support so an in-flight poll can be cancelled on unmount
  *
  * Live sites (ภูเก็ต has no site ID yet and stays unbound):
- *   4956359 + 4956575 + 4956547 หาดใหญ่ (three registrations, summed)
+ *   4956359 + 4956575 + 4956547 + 4966328 หาดใหญ่ (four registrations, summed)
  *   4821237 ตรัง | 4947126 ปัตตานี | 4817295 สุราษฎร์ธานี
  */
 
@@ -224,16 +224,16 @@ export const LIVE_SITE_IDS = {
 } as const;
 
 /**
- * หาดใหญ่'s three SolarEdge registrations, in binding-modal field order.
+ * หาดใหญ่'s four SolarEdge registrations, in binding-modal field order.
  *
- * The campus array is split across three registrations, so a pin bound to
+ * The campus array is split across four registrations, so a pin bound to
  * 4956359 alone reads only the first slice of it — 1500 of the 5839.65 kWp
- * recorded in siteCapacity.ts. All three are summed into the one pin.
+ * recorded in siteCapacity.ts. All four are summed into the one pin.
  *
  * Order is load-bearing: index 0 is ID 1, the "primary" the legacy single-ID
  * field points at and the one `resolveSiteMetrics` reads a site name from.
  */
-export const HATYAI_SITE_IDS: readonly number[] = [LIVE_SITE_IDS.HATYAI, 4956575, 4956547];
+export const HATYAI_SITE_IDS: readonly number[] = [LIVE_SITE_IDS.HATYAI, 4956575, 4956547, 4966328];
 
 // 5 MEA Solar Roof Regional Sites for Demo / Mock Mode & API Ready
 export const MOCK_SOLAREDGE_SITES: SolarEdgeRawSite[] = [
@@ -1004,34 +1004,55 @@ export async function fetchBackendHealth(
 const HATYAI_BUILDING_ID = 4;
 
 /**
- * One-time upgrade of an already-saved หาดใหญ่ binding to all three IDs.
+ * One-time upgrade of an already-saved หาดใหญ่ binding to the current default.
  *
  * Every kiosk that has run a previous build already has a v5 binding map in
  * localStorage, so changing the SEED above reaches new machines only — the
- * board in the room would keep reading 4956359 alone and the other two thirds
- * of the campus would stay invisible.
+ * board in the room would keep reading whatever the build before it wrote, and
+ * the registrations added since would stay invisible.
  *
  * Bumping the storage key would fix that by discarding the whole map, including
  * any IDs an operator typed into other pins by hand. This is narrower: it fires
- * only when หาดใหญ่ still points at exactly the old single ID, which is the
- * one state that can only have come from the old default.
+ * only when หาดใหญ่ still points at exactly one of the ID sets an earlier build
+ * shipped as its default, which are the states that can only have come from a
+ * default rather than from a deliberate choice.
  *
  * The marker key is what makes it one-time rather than sticky. Without it an
- * operator who deliberately narrowed หาดใหญ่ back to 4956359 would find the
- * other two re-added on the next reload, with no way to say no.
+ * operator who deliberately narrowed หาดใหญ่ back to an older default would
+ * find the rest re-added on the next reload, with no way to say no. Bump this
+ * key's version whenever HATYAI_SITE_IDS grows, so the upgrade runs once more.
  */
-const STORAGE_KEY_HATYAI_TRIO = 'mea_solar_hatyai_trio_migrated_v1';
+const STORAGE_KEY_HATYAI_DEFAULTS = 'mea_solar_hatyai_defaults_migrated_v2';
 
-function migrateHatyaiTrio(
+/**
+ * The หาดใหญ่ default ID sets earlier builds shipped, oldest first.
+ *
+ * A binding matching any of these exactly is still sitting on a default and is
+ * safe to upgrade. Append the outgoing set here whenever HATYAI_SITE_IDS grows.
+ */
+const HATYAI_LEGACY_DEFAULTS: readonly (readonly number[])[] = [
+  [LIVE_SITE_IDS.HATYAI],
+  [LIVE_SITE_IDS.HATYAI, 4956575, 4956547],
+];
+
+/** The bound IDs as an order-insensitive key, for comparing against a default. */
+const idSetKey = (ids: readonly number[]): string =>
+  [...ids].sort((a, b) => a - b).join(',');
+
+function migrateHatyaiDefaults(
   bindings: Record<number, BuildingSiteBinding>
 ): Record<number, BuildingSiteBinding> {
   try {
-    if (localStorage.getItem(STORAGE_KEY_HATYAI_TRIO)) return bindings;
-    localStorage.setItem(STORAGE_KEY_HATYAI_TRIO, '1');
+    if (localStorage.getItem(STORAGE_KEY_HATYAI_DEFAULTS)) return bindings;
+    localStorage.setItem(STORAGE_KEY_HATYAI_DEFAULTS, '1');
 
     const existing = bindings[HATYAI_BUILDING_ID];
-    const ids = bindingSiteIds(existing);
-    if (!existing || ids.length !== 1 || ids[0] !== LIVE_SITE_IDS.HATYAI) return bindings;
+    if (!existing) return bindings;
+
+    // Order-insensitive: an operator who retyped the same default IDs into the
+    // fields in a different order is still on that default.
+    const key = idSetKey(bindingSiteIds(existing));
+    if (!HATYAI_LEGACY_DEFAULTS.some((set) => idSetKey(set) === key)) return bindings;
 
     bindings[HATYAI_BUILDING_ID] = {
       ...existing,
@@ -1102,7 +1123,7 @@ export function loadBuildingSiteBindings(): Record<number, BuildingSiteBinding> 
         b.siteIds = b.siteId != null ? [b.siteId] : [];
       }
     }
-    return migrateHatyaiTrio(parsed);
+    return migrateHatyaiDefaults(parsed);
   } catch {
     return {};
   }

@@ -136,10 +136,10 @@ export type BindingDisplayMetric =
  * How many SolarEdge site IDs one pin may aggregate.
  *
  * A campus can have its array split across several SolarEdge registrations, and
- * the dashboard has to present that as one number per campus. Three is the cap
+ * the dashboard has to present that as one number per campus. Five is the cap
  * the operators asked for.
  */
-export const MAX_SITE_IDS_PER_BUILDING = 3;
+export const MAX_SITE_IDS_PER_BUILDING = 5;
 
 export interface BuildingSiteBinding {
   buildingId: number;

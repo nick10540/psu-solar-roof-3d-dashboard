@@ -101,7 +101,7 @@ export const BuildingBindingModal: React.FC<BuildingBindingModalProps> = ({
    *
    * Computed here as well as in siteMetricsService so the operator can see the
    * combined figure before saving. Only IDs the backend has actually returned
-   * contribute; one unknown ID among three does not blank the preview.
+   * contribute; one unknown ID among several does not blank the preview.
    */
   const previewRows = enteredIds.map((id) => ({
     id,
@@ -157,7 +157,7 @@ export const BuildingBindingModal: React.FC<BuildingBindingModalProps> = ({
     >
       <div
         id="modal-building-binding-card"
-        className="glass-panel-glow p-5 sm:p-6 rounded-3xl w-full max-w-xl shadow-2xl border border-sky-400/40 text-slate-100 max-h-[90vh] overflow-y-auto custom-scrollbar"
+        className="glass-panel-glow p-5 sm:p-6 rounded-3xl w-full max-w-2xl shadow-2xl border border-sky-400/40 text-slate-100 max-h-[90vh] overflow-y-auto custom-scrollbar"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -199,7 +199,7 @@ export const BuildingBindingModal: React.FC<BuildingBindingModalProps> = ({
               ใช้เมื่อวิทยาเขตหนึ่งถูกลงทะเบียนแยกหลายไซต์ใน SolarEdge · เว้นว่างไว้ถ้าไม่ใช้
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
               {idFields.map((value, i) => {
                 const n = Number(value.trim());
                 const dup =

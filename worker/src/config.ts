@@ -192,10 +192,10 @@ export interface SiteDescriptor {
 }
 
 /**
- * The six live registrations, across four campuses.
+ * The seven live registrations, across four campuses.
  *
- * หาดใหญ่ owns three of them: its array is split across separate SolarEdge
- * registrations, and the dashboard binds all three to the one pin and sums
+ * หาดใหญ่ owns four of them: its array is split across separate SolarEdge
+ * registrations, and the dashboard binds all four to the one pin and sums
  * them. The backend does not know about that grouping — it fetches site IDs —
  * so they are listed here as peers and only the fallback name says which
  * campus they belong to.
@@ -206,10 +206,11 @@ export interface SiteDescriptor {
  * lights up with no other change.
  *
  * The fallback capacities are only used if the API cannot be reached — the real
- * values below were read from /sites/{id} on 2026-09-07. Note that the three
- * หาดใหญ่ registrations REGISTER 1767.84 kWp between them against the 5839.65
- * commissioned in src/config/siteCapacity.ts, which is the figure the board
- * prints; the gap is the part of the array that is still not readable.
+ * values below were read from /sites/{id} on 2026-09-07, except 4966328 which
+ * has not been read yet. Note that the หาดใหญ่ registrations REGISTER far less
+ * between them than the 5839.65 commissioned in src/config/siteCapacity.ts,
+ * which is the figure the board prints; the gap is the part of the array that
+ * is still not readable.
  *
  * Do NOT sync these to siteCapacity.ts. They answer a different question —
  * what SolarEdge has on file for a registration — and the disagreement above
@@ -219,6 +220,10 @@ export const SITE_REGISTRY: SiteDescriptor[] = [
   { siteId: 4956359, fallbackName: 'MEA Solar Roof - หาดใหญ่', fallbackPeakPowerKwp: 1500.0, fallbackCity: 'หาดใหญ่' },
   { siteId: 4956575, fallbackName: 'MEA Solar Roof - หาดใหญ่ (ศูนย์พัฒนายานยนต์ไฟฟ้า)', fallbackPeakPowerKwp: 46.08, fallbackCity: 'หาดใหญ่' },
   { siteId: 4956547, fallbackName: 'MEA Solar Roof - หาดใหญ่ (อุทยานวิทยาศาสตร์)', fallbackPeakPowerKwp: 221.76, fallbackCity: 'หาดใหญ่' },
+  // Added 2026-09-13. Its /sites/{id} record has not been read yet, so the
+  // fallback capacity stays 0 rather than an invented figure - the fallback is
+  // only consulted when the API is unreachable, and 0 reads as "unknown".
+  { siteId: 4966328, fallbackName: 'MEA Solar Roof - หาดใหญ่ (4966328)', fallbackPeakPowerKwp: 0, fallbackCity: 'หาดใหญ่' },
   { siteId: 4821237, fallbackName: 'MEA Solar Roof - ตรัง', fallbackPeakPowerKwp: 999.36, fallbackCity: 'ตรัง' },
   { siteId: 4947126, fallbackName: 'MEA Solar Roof - ปัตตานี', fallbackPeakPowerKwp: 1522.08, fallbackCity: 'ปัตตานี' },
   { siteId: 4817295, fallbackName: 'MEA Solar Roof - สุราษฎร์ธานี', fallbackPeakPowerKwp: 650.88, fallbackCity: 'สุราษฎร์ธานี' },
@@ -372,8 +377,10 @@ export function withRequestedSites(cfg: ResolvedConfig, requested: number[]): Re
     if (!Number.isInteger(id) || id <= 0 || ids.includes(id)) continue;
     ids.push(id);
     // A hard cap so a malformed query string cannot make the backend fan out
-    // across hundreds of sites and burn the call budget in one request.
-    if (ids.length >= 24) break;
+    // across hundreds of sites and burn the call budget in one request. The
+    // ceiling has to clear legitimate use: 5 pins x MAX_SITE_IDS_PER_BUILDING
+    // (5) is 25, plus room for IDs registered by hand in the settings modal.
+    if (ids.length >= 32) break;
   }
   if (ids.length === 0) return cfg;
 

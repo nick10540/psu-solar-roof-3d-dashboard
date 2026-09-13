@@ -198,7 +198,7 @@ export function resolveSiteMetrics(
       .filter((ov): ov is SolarEdgeTransformedOverview => Boolean(ov) && !ov.isMockData);
 
     // No mapping, no readings, or only simulated payloads -> nothing measured.
-    // One dead ID among three does NOT blank the pin: the sites that did report
+    // One dead ID among several does NOT blank the pin: the sites that did report
     // are still real, and their sum is still the best available total.
     if (live.length === 0) {
       return emptySiteMetrics(building.id, primaryId, isBound, siteIds, capacityKwp, multiplier);

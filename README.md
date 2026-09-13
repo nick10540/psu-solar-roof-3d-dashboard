@@ -151,7 +151,7 @@ is unchanged.
 | 1 | สุราษฎร์ธานี | `4817295` | 996.75 |
 | 2 | ภูเก็ต | *not provisioned* | 972 |
 | 3 | ตรัง | `4821237` | 997.2 |
-| 4 | หาดใหญ่ | `4956359`, `4956575`, `4956547` | 5839.65 |
+| 4 | หาดใหญ่ | `4956359`, `4956575`, `4956547`, `4966328` | 5839.65 |
 | 5 | ปัตตานี | `4947126` | 2469.6 |
 | | **รวมทั้งหมด** | | **11,275.20** |
 
@@ -173,20 +173,21 @@ mode its power, energy and CO2 read "ไม่มีข้อมูล" rather t
 plausible invented figure, while its capacity still prints. In mock mode it
 displays simulated data like the others.
 
-หาดใหญ่'s array is split across **three** SolarEdge registrations:
+หาดใหญ่'s array is split across **four** SolarEdge registrations:
 
 | Site ID | Registration | Registered |
 | --- | --- | --- |
 | `4956359` | วิทยาเขตหาดใหญ่ | 1500 kWp |
 | `4956575` | ศูนย์พัฒนายานยนต์ไฟฟ้า | 46.08 kWp |
 | `4956547` | อุทยานวิทยาศาสตร์ | 221.76 kWp |
+| `4966328` | *ยังไม่ได้อ่านจาก API* | *ยังไม่ทราบ* |
 
-A pin may aggregate up to `MAX_SITE_IDS_PER_BUILDING` (3) of them, and every
+A pin may aggregate up to `MAX_SITE_IDS_PER_BUILDING` (5) of them, and every
 figure it shows — power, energy, CO2 — is the sum across them. The default
 binding lives in `src/services/solarEdgeService.ts` (`HATYAI_SITE_IDS`); an
 operator can override it per pin from the binding modal, and that choice
 persists in localStorage. The capacity the board prints is still the commissioned
-5839.65 kWp from `src/config/siteCapacity.ts`, not the 1767.84 kWp these three
+5839.65 kWp from `src/config/siteCapacity.ts`, not the smaller total these four
 register between them — the rest of the array is not readable through the API.
 
 ## Security
