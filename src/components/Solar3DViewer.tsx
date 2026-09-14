@@ -77,7 +77,8 @@ import {
 } from '../config/markerTypography';
 import { hudZoomOffset } from '../config/hudScale';
 import { useHudScale } from '../hooks/useHudScale';
-import { resolveSiteMediaPlaylist, resolveSiteMediaSpeed } from '../config/siteMedia';
+import { resolveSiteMediaPlaylist, resolveSiteMediaSpeed, SiteMediaMode } from '../config/siteMedia';
+import { setSiteMediaMode, useSiteMediaMode } from '../hooks/useSiteMediaMode';
 import {
   RotateCcw,
   Satellite,
@@ -90,6 +91,8 @@ import {
   AlertTriangle,
   MapPinPlus,
   Trash2,
+  Video,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 interface Solar3DViewerProps {
@@ -148,6 +151,15 @@ interface MarkerHandle {
    * with a playlist. Play/pause is governed by the visibility effect below.
    */
   videoEl: HTMLVideoElement | null;
+  /**
+   * Which banner set this marker's DOM was built from.
+   *
+   * The banner is baked in by the single innerHTML parse - a <video> with its
+   * playlist wiring, or an <img> - so flipping the mode cannot be patched in
+   * the way text and class strings are. The sync effect compares this against
+   * the current mode and rebuilds the marker outright when they differ.
+   */
+  mediaMode: SiteMediaMode;
   lng: number;
   lat: number;
   onClick: (e: MouseEvent) => void;
@@ -183,7 +195,10 @@ function formatLifetime(kwh: number): { value: string; unit: string } {
  * Builds the marker DOM once. `data-mea` attributes mark the nodes that later
  * get patched, so the expensive innerHTML parse happens a single time per site.
  */
-function createMarkerElement(site: BuildingInfo): {
+function createMarkerElement(
+  site: BuildingInfo,
+  mediaMode: SiteMediaMode
+): {
   el: HTMLDivElement;
   refs: Omit<MarkerHandle, 'marker' | 'lng' | 'lat' | 'onClick' | 'root'>;
 } {
@@ -231,8 +246,10 @@ function createMarkerElement(site: BuildingInfo): {
   // the DOM through textContent in patchMarker - so this stays injection-safe.
   //
   // A site with several clips starts on the first and is stepped through the
-  // rest below; a single clip keeps the cheaper native `loop`.
-  const playlist = resolveSiteMediaPlaylist(site.code);
+  // rest below; a single clip keeps the cheaper native `loop`. Picture mode
+  // always resolves to one still, so it takes the single-entry path and none
+  // of the playlist wiring below ever runs.
+  const playlist = resolveSiteMediaPlaylist(site.code, mediaMode);
   const first = playlist[0] ?? null;
   const loopAttr = playlist.length > 1 ? '' : ' loop';
   const mediaHtml = first
@@ -426,6 +443,7 @@ function createMarkerElement(site: BuildingInfo): {
       pinIdEl: pick('pinId'),
       lastUpdateAtMs: null,
       videoEl,
+      mediaMode,
     },
   };
 }
@@ -622,6 +640,12 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
    * item 1 at the top of this file).
    */
   const hudScaleRef = useRef<number>(hudScale);
+
+  /**
+   * Clip or still on every pin card - hooks/useSiteMediaMode.ts. Shared with
+   * the site subpages, so flipping it here also changes what they open on.
+   */
+  const mediaMode = useSiteMediaMode();
 
   const orbitRafRef = useRef<number | null>(null);
   const cameraRafRef = useRef<number | null>(null);
@@ -1303,9 +1327,22 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       liveIds.add(site.id);
       let handle = store.get(site.id);
 
+      // --- Banner set changed: retire the marker so it is rebuilt below ---
+      // Everything else on a card is patched in place, but the banner is part
+      // of the one innerHTML parse - <video> plus its playlist listeners, or a
+      // bare <img> - so a flip between clip and still is the one change that
+      // genuinely needs a new element. It happens on an operator's tap, not on
+      // a data tick, so the cost is five re-parses at the moment of the tap.
+      if (handle && handle.mediaMode !== mediaMode) {
+        handle.root.removeEventListener('click', handle.onClick);
+        handle.marker.remove();
+        store.delete(site.id);
+        handle = undefined;
+      }
+
       // --- Create only when this id has no marker yet ---
       if (!handle) {
-        const { el, refs } = createMarkerElement(site);
+        const { el, refs } = createMarkerElement(site, mediaMode);
 
         const onClick = (e: MouseEvent) => {
           e.stopPropagation();
@@ -1347,8 +1384,17 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     // This effect re-runs on every data tick, and that is fine: reconciliation
     // is a 5-element loop and the work it does is textContent assignment.
     // The expensive part - innerHTML parsing and Marker construction - happens
-    // once per site id, not once per tick.
-  }, [isMapCreated, buildings, metricsById, selectedBuildingId, showPinCards, hudScale]);
+    // once per site id, not once per tick. `mediaMode` is the one dependency
+    // that deliberately does re-parse, and only on the tap that changes it.
+  }, [
+    isMapCreated,
+    buildings,
+    metricsById,
+    selectedBuildingId,
+    showPinCards,
+    hudScale,
+    mediaMode,
+  ]);
 
   // -------------------------------------------------------------------------
   // Age lines: advance on the clock, not on the data
@@ -1399,8 +1445,13 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     applyPlaybackState();
     document.addEventListener('visibilitychange', applyPlaybackState);
     return () => document.removeEventListener('visibilitychange', applyPlaybackState);
-    // `buildings` is here so clips on newly-created markers get governed too.
-  }, [isMapCreated, showPinCards, buildings]);
+    // `buildings` is here so clips on newly-created markers get governed too,
+    // and `mediaMode` for the same reason: switching back to clips while the
+    // cards are hidden mints fresh `autoplay` elements, and without this they
+    // would decode behind an invisible card - exactly what the governor is for.
+    // It is declared after the marker sync effect, so by the time it runs the
+    // rebuilt markers are already in the store.
+  }, [isMapCreated, showPinCards, buildings, mediaMode]);
 
   // -------------------------------------------------------------------------
   // Render
@@ -1510,6 +1561,46 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
                   {showPinCards ? 'การ์ดบนหมุด: เปิด' : 'การ์ดบนหมุด: ปิด'}
                 </span>
               </button>
+            </div>
+
+            {/* --- Site banner: clip or still ---
+                hooks/useSiteMediaMode.ts. One switch for the whole board, not a
+                per-site choice: the reasons to go still - a venue machine that
+                cannot decode five clips at once, a projector that smears
+                motion, footage that pulls the eye off the numbers - all apply
+                to every card at the same moment. It reaches the site subpages
+                too, so a pin tapped after the switch opens on its photo. */}
+            <div className="border-t border-slate-700/60 pt-2 flex flex-col gap-1">
+              <span className="text-[10px] font-mono text-slate-400 px-1">ภาพพื้นที่ติดตั้ง</span>
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  id="btn-site-media-video"
+                  onClick={() => setSiteMediaMode('video')}
+                  className={`flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+                    mediaMode === 'video'
+                      ? 'bg-sky-500/40 text-white font-bold border border-sky-400'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/60 border border-transparent'
+                  }`}
+                  title="แสดงวิดีโอพื้นที่ติดตั้งจริงแบบวนซ้ำ (public/site/)"
+                >
+                  <Video className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span className="text-[11px]">วิดีโอ</span>
+                </button>
+
+                <button
+                  id="btn-site-media-picture"
+                  onClick={() => setSiteMediaMode('picture')}
+                  className={`flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+                    mediaMode === 'picture'
+                      ? 'bg-sky-500/40 text-white font-bold border border-sky-400'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/60 border border-transparent'
+                  }`}
+                  title="แสดงรูปภาพนิ่งแทนวิดีโอ ประหยัดเครื่องและไม่ดึงสายตาออกจากตัวเลข (public/site/picture/)"
+                >
+                  <ImageIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="text-[11px]">รูปภาพ</span>
+                </button>
+              </div>
             </div>
 
             {/* --- HUD scale trim ---

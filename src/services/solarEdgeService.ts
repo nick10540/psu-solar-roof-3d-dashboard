@@ -53,7 +53,18 @@ import { INITIAL_SOLAREDGE_CONFIG } from '../data/mockSolarData';
  * so this stays same-origin and no CORS is involved.
  */
 const BACKEND_BASE_URL = '/api/solaredge';
-const DAILY_QUOTA_LIMIT = 300; // SolarEdge daily request limit policy
+/**
+ * Ceiling on how many times a DAY this dashboard may poll its own backend.
+ *
+ * Counts browser requests to /api/solaredge, not upstream SolarEdge calls —
+ * one poll fans out to several of those, and the backend keeps its own
+ * per-minute and per-month guards for the upstream side. Raised from 300,
+ * which the old v1 `?api_key=` era took from SolarEdge policy and which a
+ * round-the-clock board at the 300 s default cadence (288 polls) sat right
+ * against. At 5000 the counter stays a usage readout rather than a wall:
+ * even a 60 s cadence spends ~1440/day.
+ */
+const DAILY_QUOTA_LIMIT = 5000;
 
 /**
  * How long the browser reuses its own last payload.

@@ -228,7 +228,7 @@ export interface BuildingInfo {
 
 export interface SolarEdgeQuotaInfo {
   callsMadeToday: number;
-  dailyQuotaLimit: number; // 300 calls/day per SolarEdge policy
+  dailyQuotaLimit: number; // 5000 dashboard polls/day (DAILY_QUOTA_LIMIT)
   remainingCalls: number;
   cacheTtlMinutes: number; // e.g. 15 minutes
   lastFetchTimestamp: number | null;

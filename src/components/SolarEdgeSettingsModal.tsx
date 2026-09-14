@@ -228,7 +228,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
 
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-mono text-sky-300">
-                ใช้ไป {quotaInfo.callsMadeToday} / {quotaInfo.dailyQuotaLimit} ครั้ง
+                ใช้ไป {quotaInfo.callsMadeToday.toLocaleString()} / {quotaInfo.dailyQuotaLimit.toLocaleString()} ครั้ง
               </span>
               {/* The browser counts its own calls to /api/solaredge; the backend
                   reports what it actually spent upstream. They are different
@@ -239,7 +239,7 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
                 </span>
               )}
               <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-400/30 font-mono">
-                เหลือ {quotaInfo.remainingCalls} ครั้ง
+                เหลือ {quotaInfo.remainingCalls.toLocaleString()} ครั้ง
               </span>
             </div>
           </div>

@@ -18,6 +18,7 @@ import {
 } from '../types';
 import { totalInstalledKwp } from '../data/mockSolarData';
 import { resolveSiteMediaPlaylist, resolveSiteMediaSpeed } from '../config/siteMedia';
+import { useSiteMediaMode } from '../hooks/useSiteMediaMode';
 import { DataSourceMode, ResolvedSiteMetrics } from '../services/siteMetricsService';
 import { NO_DATA, fmt, noDataHeadline, SourceCaption } from './metricDisplay';
 import { CountUp } from './CountUp';
@@ -34,6 +35,7 @@ import {
   MapPin, 
   ShieldCheck,
   Video,
+  Image as ImageIcon,
   ExternalLink,
   ChevronRight,
   TrendingUp,
@@ -136,11 +138,22 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
 
   /**
+   * Clip or still on this page's banner - set once for the whole board from the
+   * map's control drawer (hooks/useSiteMediaMode.ts), so a pin tapped after the
+   * switch opens showing the same thing its card on the map was showing.
+   */
+  const mediaMode = useSiteMediaMode();
+
+  /**
    * Footage for this site in play order - empty when no file has been supplied.
    * Most sites have one clip and let the element loop itself; a site with
-   * several runs through them in order and wraps back to the first.
+   * several runs through them in order and wraps back to the first. In picture
+   * mode it is always a single still, so none of the cycling below engages.
    */
-  const playlist = useMemo(() => resolveSiteMediaPlaylist(site.code), [site.code]);
+  const playlist = useMemo(
+    () => resolveSiteMediaPlaylist(site.code, mediaMode),
+    [site.code, mediaMode]
+  );
   const [clipIndex, setClipIndex] = useState(0);
   const siteMedia = playlist[clipIndex] ?? playlist[0] ?? null;
 
@@ -154,11 +167,13 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
    */
   const failuresRef = useRef(0);
 
-  // Switching sites starts the new site's footage from its first clip.
+  // Switching sites starts the new site's footage from its first clip. A change
+  // of mode resets it for the same reason: the old index belongs to the clip
+  // list and would point past the end of a one-entry picture playlist.
   useEffect(() => {
     setClipIndex(0);
     failuresRef.current = 0;
-  }, [site.code]);
+  }, [site.code, mediaMode]);
 
   const advanceClip = () => {
     if (playlist.length > 1) setClipIndex((i) => (i + 1) % playlist.length);
@@ -867,7 +882,13 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
           {/* Header */}
           <div className="flex items-center justify-between pb-2 border-b border-slate-800">
             <div className="flex items-center gap-2">
-              <Video className="w-4 h-4 text-amber-400" />
+              {/* The icon follows the mode, so the heading never promises
+                  footage on a board that has been switched to stills. */}
+              {mediaMode === 'picture' ? (
+                <ImageIcon className="w-4 h-4 text-emerald-400" />
+              ) : (
+                <Video className="w-4 h-4 text-amber-400" />
+              )}
               <h3 className="font-bold text-sm text-white">ภาพพื้นที่ติดตั้งจริง</h3>
             </div>
             <span className="text-[10px] text-slate-400 font-mono truncate max-w-[9rem]">
@@ -931,12 +952,28 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                 />
               )
             ) : (
+              /* Names the folder and the table for the mode actually in force -
+                 pointing an operator at public/site/ while the board is on
+                 stills would send them to add a file that stays unused. */
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center gap-2 px-4">
-                <Video className="w-8 h-8 text-slate-700" />
-                <div className="text-xs text-slate-400 font-medium">ยังไม่มีวิดีโอของไซต์นี้</div>
+                {mediaMode === 'picture' ? (
+                  <ImageIcon className="w-8 h-8 text-slate-700" />
+                ) : (
+                  <Video className="w-8 h-8 text-slate-700" />
+                )}
+                <div className="text-xs text-slate-400 font-medium">
+                  {mediaMode === 'picture' ? 'ยังไม่มีรูปภาพของไซต์นี้' : 'ยังไม่มีวิดีโอของไซต์นี้'}
+                </div>
                 <p className="text-[10px] text-slate-500 leading-snug max-w-[15rem]">
-                  วางไฟล์ไว้ใน <span className="font-mono text-slate-400">public/site/</span> แล้วเพิ่ม 1 บรรทัดใน{' '}
-                  <span className="font-mono text-slate-400">siteMedia.ts</span> ตามรหัสไซต์{' '}
+                  วางไฟล์ไว้ใน{' '}
+                  <span className="font-mono text-slate-400">
+                    {mediaMode === 'picture' ? 'public/site/picture/' : 'public/site/'}
+                  </span>{' '}
+                  แล้วเพิ่ม 1 บรรทัดใน{' '}
+                  <span className="font-mono text-slate-400">
+                    {mediaMode === 'picture' ? 'SITE_PICTURE_FILES' : 'SITE_MEDIA_FILES'}
+                  </span>{' '}
+                  ใน <span className="font-mono text-slate-400">siteMedia.ts</span> ตามรหัสไซต์{' '}
                   <span className="font-mono text-slate-400">{site.code}</span>
                 </p>
               </div>
