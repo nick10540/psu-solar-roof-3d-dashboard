@@ -167,12 +167,25 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
    */
   const failuresRef = useRef(0);
 
+  /**
+   * True once the current media has given up outright - every clip in a
+   * playlist has failed in a row, or the lone picture-mode still errored - so
+   * the placeholder branch below (otherwise reached only when `siteMedia`
+   * itself is null, i.e. no file was ever listed) also catches a file that
+   * *is* listed but missing or broken on disk. Mirrors `dropBanner` on the
+   * map marker in Solar3DViewer.tsx.
+   */
+  const [mediaFailed, setMediaFailed] = useState(false);
+
   // Switching sites starts the new site's footage from its first clip. A change
   // of mode resets it for the same reason: the old index belongs to the clip
-  // list and would point past the end of a one-entry picture playlist.
+  // list and would point past the end of a one-entry picture playlist. The
+  // failure flag resets alongside it - a new site or mode gets its own chance
+  // to load rather than inheriting the last one's dead banner.
   useEffect(() => {
     setClipIndex(0);
     failuresRef.current = 0;
+    setMediaFailed(false);
   }, [site.code, mediaMode]);
 
   const advanceClip = () => {
@@ -898,7 +911,7 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
 
           {/* The clip, or an honest placeholder for a site with no file yet. */}
           <div className="flex-1 min-h-[12rem] rounded-xl overflow-hidden border border-sky-500/20 bg-slate-950/80 relative">
-            {siteMedia ? (
+            {siteMedia && !mediaFailed ? (
               siteMedia.kind === 'video' ? (
                 <video
                   // Keyed by site rather than by URL: a playlist swaps its
@@ -936,10 +949,14 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                     advanceClip();
                   }}
                   // A file that will not decode hands over to the next one, up
-                  // until every clip in the list has failed in a row.
+                  // until every clip in the list has failed in a row - at which
+                  // point there is nothing left to hand over to, so the banner
+                  // drops to the placeholder instead of sitting on screen as a
+                  // dead black box. Mirrors `dropBanner` in Solar3DViewer.tsx.
                   onError={() => {
                     failuresRef.current += 1;
                     if (failuresRef.current < playlist.length) advanceClip();
+                    else setMediaFailed(true);
                   }}
                 />
               ) : (
@@ -949,6 +966,11 @@ export const SiteDetailSubpage: React.FC<SiteDetailSubpageProps> = ({
                   alt={`ภาพพื้นที่ติดตั้ง ${site.name}`}
                   className="w-full h-full object-cover"
                   draggable={false}
+                  // A still listed in SITE_PICTURE_FILES but missing (or
+                  // undecodable) on disk otherwise renders the browser's own
+                  // broken-image glyph forever. This falls through to the same
+                  // placeholder branch a site with no file at all gets.
+                  onError={() => setMediaFailed(true)}
                 />
               )
             ) : (

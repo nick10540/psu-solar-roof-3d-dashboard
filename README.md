@@ -1,8 +1,8 @@
 # PSU / MEA Solar Roof — Interactive 3D Dashboard
 
 A kiosk dashboard for five regional MEA Solar Roof sites in southern Thailand,
-built for a 72" screen: a MapLibre/Three.js campus view with per-site media
-banners and live production pulled from the SolarEdge Monitoring API.
+built for a 72" screen: a MapLibre/Three.js campus view with per-site video or
+picture banners and live production pulled from the SolarEdge Monitoring API.
 
 ## Architecture
 
@@ -189,6 +189,37 @@ operator can override it per pin from the binding modal, and that choice
 persists in localStorage. The capacity the board prints is still the commissioned
 5839.65 kWp from `src/config/siteCapacity.ts`, not the smaller total these four
 register between them — the rest of the array is not readable through the API.
+
+## Site media — video or picture
+
+Every pin's card and every site subpage shows a banner: a looping clip, or a
+still photo. Which one is a **single switch for the whole board**, not a
+per-site setting — in the map's control drawer, under **ภาพพื้นที่ติดตั้ง**:
+
+| Button | Shows | Why an operator picks it |
+| --- | --- | --- |
+| **วิดีโอ** (default) | Looping clips from `public/site/` | The normal setting |
+| **รูปภาพ** | Still photos from `public/site/picture/` | A venue machine that can't decode five clips at once, a projector that smears motion, or a ceremony where moving footage pulls the eye off the numbers |
+
+The choice is saved per browser profile (`localStorage`) and applies to every
+open tab or window on that profile at once — a pin opened on the subpage
+screen after the switch opens on the same thing its card on the map was
+showing. A profile that has never touched the switch behaves exactly as the
+board did before this feature existed: video is always the default.
+
+**Adding or replacing a site's banner** — both tables live in
+[`src/config/siteMedia.ts`](src/config/siteMedia.ts):
+
+| Mode | Folder | Table | Rule |
+| --- | --- | --- | --- |
+| Video | `public/site/` | `SITE_MEDIA_FILES` | One file, or a list to play in order (the last clip hands back to the first). A slow clip is sped up via `SITE_MEDIA_SPEED` in the same file rather than a re-encode. |
+| Picture | `public/site/picture/` | `SITE_PICTURE_FILES` | Exactly one still per site, never a list — a still never fires the event a slideshow would advance on. |
+
+Drop the file into the matching folder, then add one line to that table keyed
+by the site's `code` (e.g. `MEA-HDY-04`). A site missing from a table renders
+that mode's card **bannerless**, not broken — and it never falls back to the
+other mode's file, so a card switched to stills never quietly starts playing
+a clip.
 
 ## Security
 

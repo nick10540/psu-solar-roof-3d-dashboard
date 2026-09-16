@@ -101,13 +101,25 @@ export interface SiteMedia {
 
 /**
  * `dir` is '' for the clips sitting at the root of `public/site/` and
- * 'picture/' for the stills. `kind` still comes from the extension rather than
- * from which table the file came out of, so a clip filed by mistake under
- * SITE_PICTURE_FILES mounts as <video> instead of as a broken <img>.
+ * 'picture/' for the stills - required rather than defaulted, so a stray
+ * `files.map(toSiteMedia)` fails to compile instead of quietly handing the
+ * array index in as `dir` (see the comment at its one multi-file call site
+ * below).
+ *
+ * `kind` comes from the extension alone, not from which table the file came
+ * out of - this function has no opinion on whether a video belongs under
+ * SITE_PICTURE_FILES. `resolveSiteMediaPlaylist` is what turns that opinion
+ * into a rule and rejects one before it ever reaches here.
  */
-function toSiteMedia(file: string, dir = ''): SiteMedia {
+function toSiteMedia(file: string, dir: string): SiteMedia {
   return {
-    url: `/site/${dir}${encodeURIComponent(file)}`,
+    // Built off BASE_URL rather than a literal leading slash, for the same
+    // reason main.tsx:26-33 builds the MapLibre worker's URL that way: an
+    // absolute "/site/..." resolves to the domain root and misses the file
+    // once this dashboard is served from a sub-path. BASE_URL always carries
+    // its own trailing slash, so this is a plain concatenation, and at the
+    // default BASE_URL of "/" it is exactly the string this was before.
+    url: `${import.meta.env.BASE_URL}site/${dir}${encodeURIComponent(file)}`,
     kind: VIDEO_EXTENSIONS.test(file) ? 'video' : 'image',
   };
 }
@@ -134,15 +146,31 @@ export function resolveSiteMediaPlaylist(
       );
     }
 
-    return picture ? [toSiteMedia(picture, 'picture/')] : [];
+    if (!picture) return [];
+
+    // A clip filed under SITE_PICTURE_FILES by mistake must not autoplay as a
+    // <video> just because toSiteMedia derives `kind` from the extension -
+    // that would defeat picture mode on exactly the machine it was switched
+    // on to spare. Rejected here, before toSiteMedia ever sees it, rather
+    // than quietly falling back to motion: the card goes bannerless instead,
+    // the same as a site missing from this table entirely.
+    if (VIDEO_EXTENSIONS.test(picture)) {
+      if (import.meta.env.DEV) {
+        console.warn(
+          `[siteMedia] ${code}: SITE_PICTURE_FILES entry "${picture}" is a video file - ignored in picture mode instead of played as a clip.`
+        );
+      }
+      return [];
+    }
+
+    return [toSiteMedia(picture, 'picture/')];
   }
 
   const entry = SITE_MEDIA_FILES[code];
   if (!entry) return [];
 
   const files = Array.isArray(entry) ? entry : [entry];
-  // Not `files.map(toSiteMedia)`: map would hand the array index in as `dir`.
-  const playlist = files.map((file) => toSiteMedia(file));
+  const playlist = files.map((file) => toSiteMedia(file, ''));
 
   if (import.meta.env.DEV && playlist.length > 1 && playlist.some((m) => m.kind !== 'video')) {
     console.warn(

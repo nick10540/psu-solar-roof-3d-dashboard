@@ -228,18 +228,18 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
 
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-mono text-sky-300">
-                ใช้ไป {quotaInfo.callsMadeToday.toLocaleString()} / {quotaInfo.dailyQuotaLimit.toLocaleString()} ครั้ง
+                ใช้ไป {quotaInfo.callsMadeToday.toLocaleString('en-US')} / {quotaInfo.dailyQuotaLimit.toLocaleString('en-US')} ครั้ง
               </span>
               {/* The browser counts its own calls to /api/solaredge; the backend
                   reports what it actually spent upstream. They are different
                   numbers and conflating them hid the real usage. */}
               {quotaInfo.upstreamCallsToday != null && (
                 <span className="text-[10px] bg-sky-500/20 text-sky-200 px-2 py-0.5 rounded-full border border-sky-400/30 font-mono">
-                  upstream {quotaInfo.upstreamCallsToday}
+                  upstream {quotaInfo.upstreamCallsToday?.toLocaleString('en-US')}
                 </span>
               )}
               <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-400/30 font-mono">
-                เหลือ {quotaInfo.remainingCalls.toLocaleString()} ครั้ง
+                เหลือ {quotaInfo.remainingCalls.toLocaleString('en-US')} ครั้ง
               </span>
             </div>
           </div>
@@ -248,7 +248,13 @@ export const SolarEdgeSettingsModal: React.FC<SolarEdgeSettingsModalProps> = ({
           <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
             <div
               className={`h-full transition-all duration-500 ${
-                quotaPercentage > 80 ? 'bg-rose-500' : quotaPercentage > 50 ? 'bg-amber-400' : 'bg-emerald-400'
+                // Tuned against dailyQuotaLimit (DAILY_QUOTA_LIMIT in
+                // solarEdgeService.ts), not a universal traffic-light split - move
+                // these if that constant moves. At 5000/day a round-the-clock board
+                // only spends ~288/day at the 300s default and ~1440/day at 60s, so
+                // the old 50/80 bands sat above anything real traffic could reach and
+                // the bar read emerald forever.
+                quotaPercentage > 50 ? 'bg-rose-500' : quotaPercentage > 25 ? 'bg-amber-400' : 'bg-emerald-400'
               }`}
               style={{ width: `${Math.max(5, quotaPercentage)}%` }}
             />

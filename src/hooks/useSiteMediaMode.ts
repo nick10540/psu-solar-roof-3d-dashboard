@@ -73,9 +73,52 @@ export function setSiteMediaMode(next: SiteMediaMode): void {
  * Forget the saved mode; the next load opens on the clips.
  * Mirrors clearHudScaleTrim() - the escape hatch for a kiosk nobody can reach
  * by touch: `localStorage.removeItem('mea_site_media_mode_v1')` then reload.
+ *
+ * Deliberately not just `setSiteMediaMode(SITE_MEDIA_MODE_DEFAULT)`: that
+ * function's early return skips the write whenever the in-memory `mode`
+ * already matches the target, and a corrupt or hand-edited value on disk
+ * reads back through `readStored()` as the default too - so this escape
+ * hatch would see "already on default" and leave the bad value sitting in
+ * storage forever. The key is removed unconditionally instead, then the
+ * default is applied and broadcast the same way `setSiteMediaMode` would.
  */
 export function clearSiteMediaMode(): void {
-  setSiteMediaMode(SITE_MEDIA_MODE_DEFAULT);
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* private mode - there was nothing persisted to begin with */
+  }
+
+  mode = SITE_MEDIA_MODE_DEFAULT;
+  listeners.forEach((listener) => listener());
+}
+
+/**
+ * Cross-window sync.
+ *
+ * localStorage's own `storage` event is the only signal that another window
+ * changed this key - and it fires in every OTHER same-origin window, never
+ * the one that made the change. Without a listener for it, a second window
+ * (or a second kiosk display) kept whichever mode it happened to boot with:
+ * an explicit re-selection made there compared the new value against THAT
+ * window's own stale `mode` and, once matched, `setSiteMediaMode`'s early
+ * return skipped the update - so the switch silently no-op'd there and,
+ * regardless, would have reverted to the stale value on the next reload.
+ *
+ * `e.key === null` is included because that is how the event reports
+ * `localStorage.clear()` - it does not name every key that was wiped.
+ *
+ * Sibling module-level stores (useHudScaleTrim.ts and friends) do not do
+ * this yet; this one picked it up first.
+ */
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e: StorageEvent) => {
+    if (e.key !== STORAGE_KEY && e.key !== null) return;
+    const next = readStored();
+    if (next === mode) return;
+    mode = next;
+    listeners.forEach((listener) => listener());
+  });
 }
 
 /** React binding for the shared mode store. */

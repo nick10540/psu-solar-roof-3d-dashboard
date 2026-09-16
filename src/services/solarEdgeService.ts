@@ -119,8 +119,17 @@ export function resolveSiteIntervals(
  * Stop spending live calls once the day's remaining budget hits this floor,
  * so the ceremony can never black out from an exhausted quota. Cached data
  * keeps being served instead.
+ *
+ * A fraction of DAILY_QUOTA_LIMIT rather than a fixed count, so it scales with
+ * the ceiling instead of drifting out of proportion to it. A flat 20 was a
+ * meaningful 6.7% cushion against the old 300-call ceiling; left untouched
+ * against 5000 it would need 4980 polls in a single day before the brake could
+ * ever engage, and a round-the-clock board at the 300 s default only spends
+ * ~288/day — the brake would be dead code. 5% keeps it a real reserve whatever
+ * DAILY_QUOTA_LIMIT is set to (250 at 5000), with a floor of 20 so a much
+ * smaller ceiling never rounds the reserve away to nothing.
  */
-const QUOTA_RESERVE = 20;
+const QUOTA_RESERVE = Math.max(20, Math.round(DAILY_QUOTA_LIMIT * 0.05));
 
 export interface SolarEdgeRequestOptions {
   signal?: AbortSignal;

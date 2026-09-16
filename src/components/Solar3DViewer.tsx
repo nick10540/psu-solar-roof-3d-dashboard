@@ -257,7 +257,7 @@ function createMarkerElement(
          ${
            first.kind === 'video'
              ? `<video data-mea="mediaEl" class="w-full h-full object-cover" src="${first.url}" autoplay${loopAttr} muted playsinline preload="metadata"></video>`
-             : `<img data-mea="mediaEl" class="w-full h-full object-cover" src="${first.url}" alt="" draggable="false" />`
+             : `<img data-mea="mediaEl" class="w-full h-full object-cover" src="${first.url}" alt="" draggable="false" decoding="async" width="${s(MARKER_CARD.widthPx)}" height="${s(markerMediaHeightFor(site.code))}" />`
          }
          <!-- Keeps the header below readable against a bright frame. -->
          <div class="absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-slate-950/90 to-transparent pointer-events-none"></div>
@@ -491,6 +491,28 @@ function paintUpdatedAgo(handle: MarkerHandle, now: number): void {
 
   const nextDisplay = label ? '' : 'none';
   if (el.style.display !== nextDisplay) el.style.display = nextDisplay;
+}
+
+/**
+ * Detach one marker from the map, and let its `<video>` (if it has one) give
+ * up its decoder right now rather than whenever a GC pass gets around to it.
+ *
+ * This is NOT working around a leaked decoder: the HTML spec runs a media
+ * element's internal pause steps the instant it is removed from the
+ * Document, so a detached `<video>` is already paused on its own. What it WAS
+ * still holding onto is the decoder and its buffered frames, kept alive by
+ * the element's own `src` until whatever GC pass eventually reclaims it.
+ * Clearing `src` and calling `load()` releases that at the moment of the tap
+ * that retired the marker, instead of leaving the timing to GC.
+ */
+function retireMarker(handle: MarkerHandle): void {
+  handle.root.removeEventListener('click', handle.onClick);
+  if (handle.videoEl) {
+    handle.videoEl.pause();
+    handle.videoEl.removeAttribute('src');
+    handle.videoEl.load();
+  }
+  handle.marker.remove();
 }
 
 /**
@@ -970,10 +992,7 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       map.off('error', handleError);
       map.off('load', handleLoad);
 
-      markersRef.current.forEach((handle) => {
-        handle.root.removeEventListener('click', handle.onClick);
-        handle.marker.remove();
-      });
+      markersRef.current.forEach((handle) => retireMarker(handle));
       markersRef.current.clear();
 
       map.remove(); // releases the WebGL context, workers and tile cache
@@ -1334,8 +1353,7 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
       // genuinely needs a new element. It happens on an operator's tap, not on
       // a data tick, so the cost is five re-parses at the moment of the tap.
       if (handle && handle.mediaMode !== mediaMode) {
-        handle.root.removeEventListener('click', handle.onClick);
-        handle.marker.remove();
+        retireMarker(handle);
         store.delete(site.id);
         handle = undefined;
       }
@@ -1377,8 +1395,7 @@ const Solar3DViewerImpl: React.FC<Solar3DViewerProps> = ({
     // --- Remove markers for buildings that no longer exist ---
     store.forEach((handle, id) => {
       if (liveIds.has(id)) return;
-      handle.root.removeEventListener('click', handle.onClick);
-      handle.marker.remove();
+      retireMarker(handle);
       store.delete(id);
     });
     // This effect re-runs on every data tick, and that is fine: reconciliation
