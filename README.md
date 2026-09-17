@@ -1,7 +1,7 @@
 # PSU / MEA Solar Roof — Interactive 3D Dashboard
 
 A kiosk dashboard for five regional MEA Solar Roof sites in southern Thailand,
-built for a 72" screen: a MapLibre/Three.js campus view with per-site video or
+built for a 72" screen: a MapLibre GL campus view with per-site video or
 picture banners and live production pulled from the SolarEdge Monitoring API.
 
 ## Architecture
@@ -17,7 +17,7 @@ Two processes. The browser never holds a SolarEdge credential.
 
 | Part | Where | Role |
 | --- | --- | --- |
-| Frontend | `src/` | React 19 + Vite 6 + Tailwind v4, MapLibre GL, Three.js |
+| Frontend | `src/` | React 19 + Vite 6 + Tailwind v4, MapLibre GL |
 | Backend | `worker/` | Holds the SolarEdge Fleet API Key, calls the v2 API, caches responses. See [worker/README.md](worker/README.md). |
 
 Everything else the dashboard remembers — building bindings, custom buildings,
