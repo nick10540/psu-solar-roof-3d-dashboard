@@ -11,6 +11,7 @@ import {
   BuildingInfo,
   CampusWeather,
   DEFAULT_REFRESH_INTERVALS,
+  REFRESH_DEFAULTS_VERSION,
   SolarEdgeConfig,
   SolarEdgeSiteOverview,
   TimeSeriesDataPoint,
@@ -58,11 +59,17 @@ export const INITIAL_SOLAREDGE_CONFIG: SolarEdgeConfig = {
   pollIntervalSec: 15,
   showSiteEditTools: false,
   extraSiteIds: [],
-  // The pre-knob cadence: power + today's energy every 5 min, the
-  // accumulating totals every 30. Upgrading changes nothing about what the
-  // board spends until an operator deliberately moves it in the settings panel.
+  // One knob, and it starts at an hour (see DEFAULT_REFRESH_INTERVALS), which
+  // past the fixed series cadence sets the tempo of the whole board: a fresh
+  // profile makes one round of calls per hour until an operator deliberately
+  // turns it down in the settings panel, where the cost is on screen.
   refreshIntervals: { ...DEFAULT_REFRESH_INTERVALS },
   siteRefreshIntervals: {},
+  // Already on the current default by construction, so the one-time bump in
+  // loadSolarEdgeConfig has nothing to do here. Note this stamp is only correct
+  // for a config BUILT from these defaults — a stored one is read from its own
+  // `refreshDefaultsVersion`, before this object is merged underneath it.
+  refreshDefaultsVersion: REFRESH_DEFAULTS_VERSION,
 };
 
 export const SITE_OVERVIEW_DEFAULT: SolarEdgeSiteOverview = {

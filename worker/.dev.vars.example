@@ -29,14 +29,15 @@ SOLAREDGE_MAX_CALLS_PER_MIN=50
 # to the real allowance to have the guard (which serves cache instead of
 # failing) come first.
 #
-# With the per-minute ceiling at 50 this is the tighter limit by far, and since
-# หาดใหญ่ became three registrations it BINDS AT THE DEFAULT CADENCE: six sites
-# at 300 s spend ~4k/day, i.e. ~121k in a 30-day month against a 100k guard, so
-# the last few days of the month serve cache instead of fetching. Either raise
-# this to the account's real allowance or ease SOLAREDGE_POWER_FLOW_INTERVAL_SEC
-# to ~450. (At the 10 s floor it is ~54k/day — under two days.) The settings
-# panel does that arithmetic live — calls/min, /day and /month for the sites
-# actually on screen — so check it there after changing the interval.
+# With the per-minute ceiling at 50 this was the tighter limit by far, until the
+# default cadence went to an hour. Now the six IDs listed above spend ~726
+# calls/day, ~22k in a 30-day month; add the seventh registration SITE_REGISTRY
+# already knows (4966328) and it is ~847/day, ~25k. (At a 900 s default those
+# seven came to ~101k, level with this guard; at the original 300 s, ~141k, so a
+# week of every month was served from cache. At the 10 s floor it is ~63k/day —
+# a day and a half.) The settings panel does that arithmetic live — calls/min,
+# /day and /month for the sites actually on screen — so check it there after
+# changing the interval.
 SOLAREDGE_MONTHLY_CALL_BUDGET=100000
 
 # Default cadence, in seconds, for a request that carries none of its own
@@ -52,7 +53,14 @@ SOLAREDGE_MONTHLY_CALL_BUDGET=100000
 # finer — and runs on a fixed 900 s that is not configurable. The old
 # SOLAREDGE_ENERGY_INTERVAL_SEC governed those and is now ignored;
 # SOLAREDGE_POWER_INTERVAL_SEC is still read as a fallback for the name below.
-SOLAREDGE_POWER_FLOW_INTERVAL_SEC=300
+#
+# Past that fixed cadence this number governs the whole board, not just the live
+# kW: nothing is fetched without a request, so a dashboard asking once an hour
+# gets the quarter-hour series once an hour too. At 3600 that is five upstream
+# calls per site per hour and everything on screen — kW, energy, CO2, chart —
+# up to an hour old. Turn it down for a livelier board and watch the monthly
+# total above; at or under 900 the series go back to their own quarter hour.
+SOLAREDGE_POWER_FLOW_INTERVAL_SEC=3600
 
 # CORS allow-list. Leave empty for same-origin (behind the Vite/Nginx proxy).
 ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000

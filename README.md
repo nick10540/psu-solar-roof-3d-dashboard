@@ -240,10 +240,31 @@ a clip.
 - **Live mode never fabricates.** A site the backend could not read is absent
   from the payload, and the UI renders "ไม่มีข้อมูล". Simulated numbers appear
   only when Mock Simulator is explicitly selected.
-- **Two cache layers.** The backend caches upstream responses for 4.5 minutes
-  (shared across every viewer); the browser keeps its own SWR cache for the same
-  window. A reload or a second tab costs nothing upstream. SolarEdge rate-limits
-  per MINUTE, so sites are also fetched sequentially.
+- **Two cache layers.** The backend caches upstream responses per endpoint and
+  shares them across every viewer: the live `/power-flow` reading for as long as
+  the configured refresh interval (1 hour by default), the quarter-hour series
+  for a fixed 15 minutes, because the API will not answer them finer. The
+  browser keeps its own SWR cache at 90% of the fastest interval any site is set
+  to. A reload or a second tab costs nothing upstream. SolarEdge rate-limits per
+  MINUTE, so sites are also fetched sequentially.
+- **Nothing is fetched unless a poll asks for it**, which is why the interval
+  governs more than the live kW once it passes 15 minutes. The board polls on
+  one timer at the fastest interval any site is set to; a tick refetches
+  whatever is due. At the 1-hour default the quarter-hour series come due every
+  tick, so the whole board — kW, energy, CO2, chart — moves hourly, at five
+  upstream calls per site per hour. Set the interval at or under 15 minutes and
+  the series go back to their own quarter hour, and cost it.
+- **A lowered default reaches boards already in the field.** The refresh cadence
+  is stored per browser profile, so a kiosk that has run before would otherwise
+  keep whatever default it was first given. `REFRESH_DEFAULTS_VERSION` in
+  [`src/types.ts`](src/types.ts) is stamped into that stored config; when the
+  shipped default changes, bump it, and on its next load every board whose stamp
+  is behind is pulled onto the new value once and re-stamped. It only ever slows
+  a board down — a cadence already at or slower than the default is left alone,
+  and per-site overrides that were FASTER are cleared so those pins follow the
+  global knob again. Anything the operator sets afterwards is theirs and stays.
+  Version 1 was the move from a 300 s live cadence to 900 s; version 2 is 900 s
+  to 3600 s.
 - **Kiosk stability.** `useLongRunGuard` watches heap pressure; every callback
   passed to `Solar3DViewer` is memoised because an unstable prop rebuilds the
   entire MapLibre instance. See the header comment in `src/App.tsx`.

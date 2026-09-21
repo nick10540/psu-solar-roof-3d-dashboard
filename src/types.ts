@@ -337,11 +337,44 @@ export interface SiteRefreshIntervals {
 }
 
 export const DEFAULT_REFRESH_INTERVALS: SiteRefreshIntervals = {
-  // 300 keeps the default spend byte-for-byte what it was under the old two
-  // knobs (0.467 calls/min/site either way), so nobody's bill moves until they
-  // deliberately turn this down.
-  powerFlowSec: 300,
+  // 3600. Past SERIES_INTERVAL_SEC this stops being only the live cadence: the
+  // poll timer ticks at the fastest interval any site is set to, and the series
+  // are fetched when a tick finds their 15 minutes expired — which, at an hour,
+  // is every tick. So the WHOLE board now moves once an hour, five upstream
+  // calls per site per tick, and the spend drops much further than the live
+  // figure alone would suggest: the seven registrations cost ~847 calls/day,
+  // ~25k in a 30-day month, against ~3.4k/day and ~101k at 900 s and ~4.7k/day
+  // and ~141k at the original 300 s. Comfortably clear of the 100k guard for
+  // the first time.
+  //
+  // The price is that every figure on screen — kW, today's energy, CO2, the
+  // chart — can be an hour old, not just the headline kW. An operator who wants
+  // the board livelier for a ceremony turns this down and the panel prices it
+  // on the spot; anything at or under 900 s puts the series back on their own
+  // quarter hour and the cost back up with them.
+  powerFlowSec: 3600,
 };
+
+/**
+ * Which shipped cadence default a stored config has already been moved onto.
+ *
+ * A kiosk that has run before holds its own `refreshIntervals` in localStorage,
+ * and that stored value wins over the constant above — which is right for a
+ * cadence an operator chose, and wrong for one they only inherited from an
+ * older build. Without this marker the two cannot be told apart, so lowering
+ * the shipped default would reach fresh profiles only and every board already
+ * in the field would keep spending at the old rate until someone walked up to
+ * it.
+ *
+ * Bump this WITH a change to DEFAULT_REFRESH_INTERVALS, never on its own. On
+ * the next load each board whose stamp is behind is pulled onto the new default
+ * once (see `applyRefreshDefaultBump` in services/solarEdgeService.ts) and
+ * stamped, after which whatever the operator sets is theirs and stays.
+ *
+ * 1 = the move from a 300 s live cadence to 900 s.
+ * 2 = 900 s to 3600 s, which also puts the fixed series on the same hourly tick.
+ */
+export const REFRESH_DEFAULTS_VERSION = 2;
 
 /** Clamp one interval into [MIN, MAX], falling back when unparseable. */
 export function clampRefreshIntervalSec(raw: unknown, fallback: number): number {
@@ -367,6 +400,13 @@ export interface SolarEdgeConfig {
    * `resolveSiteIntervals` in solarEdgeService.ts does the lookup.
    */
   siteRefreshIntervals?: Record<string, SiteRefreshIntervals>;
+  /**
+   * The REFRESH_DEFAULTS_VERSION this config has already been pulled onto.
+   *
+   * Absent on anything written before the marker existed, which is read as 0 —
+   * i.e. "still on whatever default it was given" — and bumped once on load.
+   */
+  refreshDefaultsVersion?: number;
   /**
    * Show the "เพิ่มไซต์ / ลบไซต์" tools on the map. Off by default: on an
    * unattended ceremony screen a stray tap on "ลบไซต์" removes a site pin, and
