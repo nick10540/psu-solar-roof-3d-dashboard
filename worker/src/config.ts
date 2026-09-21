@@ -81,9 +81,9 @@ export const DEFAULT_API_BASE = 'https://monitoringapi.solaredge.com/v2';
  * last in the list, which reads on a 72" screen as "that campus is broken"
  * rather than "we asked too fast". Sequential fetching alone does not fix
  * that; the burst has to actually wait, which is what `reserveUpstreamSlot`
- * does. At 50 even the 10-second floor fits: the six registrations in
- * SITE_REGISTRY want 36/min for /power-flow plus ~1.6/min for the fixed series
- * group. Registering a seventh is what would put this ceiling in play.
+ * does. At 50 even the 10-second floor still fits, with less room than it reads
+ * like: the seven registrations in SITE_REGISTRY want 42/min for /power-flow
+ * plus ~1.9/min for the fixed series group. An eighth at that floor would not.
  *
  * Per MONTH: raised from the entry package's 2000 to 100000 at the operator's
  * request, so the configurable refresh interval below has room to run. Read
@@ -91,12 +91,13 @@ export const DEFAULT_API_BASE = 'https://monitoringapi.solaredge.com/v2';
  * about the account — if the real allowance is lower, SolarEdge answers 429
  * long before either guard fires.
  *
- * The MONTHLY figure is the binding constraint, and since หาดใหญ่ became three
- * registrations it binds at the DEFAULT cadence rather than only at the floor:
- * six sites at 300 s spend ~4k/day, so 100000 runs out a few days short of a
- * 30-day month and the rest of it is served from cache. Six sites at the 10 s
- * floor spend ~54k/day — under two days. The settings panel puts that
- * arithmetic on screen rather than leaving it to be discovered.
+ * The MONTHLY figure was the binding constraint until the default cadence went
+ * to an hour, which clears it outright: the seven registrations now spend ~847
+ * calls/day, ~25k in a 30-day month. (It was ~101k at a 900 s default, ~141k at
+ * the original 300 s — a week of every month served from cache — and at the
+ * 10 s floor it is ~63k/day, about a day and a half.) So the guard is now what
+ * it was meant to be, a backstop against a cadence someone turned up and forgot
+ * about; the settings panel prices each change on screen as it is made.
  */
 export const DEFAULT_MAX_CALLS_PER_MIN = 50;
 export const DEFAULT_MONTHLY_CALL_BUDGET = 100000;
@@ -154,8 +155,18 @@ export const MAX_REFRESH_INTERVAL_SEC = 86400;
  */
 export const SERIES_INTERVAL_SEC = 900;
 
-/** Cadence for /power-flow when the client sends none. */
-export const DEFAULT_POWER_FLOW_INTERVAL_SEC = 300;
+/**
+ * Cadence for /power-flow when the client sends none.
+ *
+ * 3600. Past SERIES_INTERVAL_SEC the cadence stops being only /power-flow's:
+ * nothing here is fetched unless a request arrives, so a board asking once an
+ * hour gets the quarter-hour series once an hour too. Five calls per site per
+ * hour, which for the seven registrations in SITE_REGISTRY is ~847/day, ~25k in
+ * a 30-day month — against ~3.4k/day at 900 s and ~4.7k/day at the original
+ * 300 s. Anything fresher is a deliberate purchase, which is what the knob is
+ * for, and under 900 s the series go back to costing their own quarter hour.
+ */
+export const DEFAULT_POWER_FLOW_INTERVAL_SEC = 3600;
 
 export interface RefreshIntervals {
   /** Seconds between /power-flow calls for one site. */

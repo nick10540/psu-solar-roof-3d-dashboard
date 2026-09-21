@@ -1,15 +1,18 @@
 /**
  * RefreshCadenceSettings — how often each site's figures are refetched.
  *
- * Two knobs per site, in seconds, floored at 30:
+ * ONE knob per site, in seconds, floored at MIN_REFRESH_INTERVAL_SEC:
  *
- *   powerSec   /power + /energy (today)        "what is happening now"
- *   energySec  /energy?MONTH + CO2             "what has accumulated"
+ *   powerFlowSec  /power-flow   the live kW, which SolarEdge refreshes every 3 s
  *
- * Each pair costs 2 upstream SolarEdge calls per site per tick, and the plan
- * charges per MINUTE as well as per month. That arithmetic is on screen rather
- * than in a doc comment, and checked against the ceilings /health reports
- * rather than any figure hard-coded here: the 30-second floor is affordable by
+ * The quarter-hour series (/power, today's /energy, /energy?MONTH, CO2) are not
+ * offered as a knob — the API refuses anything finer than QUARTER_HOUR — but
+ * they are not free either, and past an hour-long cadence they ride the same
+ * tick, so they are counted in the estimate below.
+ *
+ * The plan charges per MINUTE as well as per month. That arithmetic is on
+ * screen rather than in a doc comment, and checked against the ceilings /health
+ * reports rather than any figure hard-coded here: the floor is affordable by
  * the minute and ruinous by the month, and an operator setting this on a
  * touchscreen five minutes before a ceremony has no other way to know.
  *
@@ -60,6 +63,10 @@ const PRESETS: Array<{ label: string; sec: number }> = [
   { label: '1 นาที', sec: 60 },
   { label: '5 นาที', sec: 300 },
   { label: '15 นาที', sec: 900 },
+  // The shipped default. It has to be reachable in one tap: an operator who
+  // turned the board up for a ceremony needs the way back, and without a button
+  // for the default none of these would be lit on an untouched board either.
+  { label: '1 ชม.', sec: 3600 },
 ];
 
 /** "90 วิ" / "5 นาที" / "1.5 ชม." — whichever reads shortest. */
@@ -159,17 +166,28 @@ export const RefreshCadenceSettings: React.FC<RefreshCadenceSettingsProps> = ({
    * account list: an unbound site in the account costs nothing. Plus one
    * metadata call per site per day.
    *
-   * The knob costs ONE call per site per tick (/power-flow) — hence
-   * `60 / powerFlowSec`. The quarter-hour series add four more per site
-   * (/power, today's /energy, the month series, environmental-benefits) on a
-   * fixed SERIES_INTERVAL_SEC, which the operator cannot move and so is a
-   * constant here too.
+   * The knob costs ONE call per site per tick (/power-flow); the quarter-hour
+   * series add four more per site (/power, today's /energy, the month series,
+   * environmental-benefits) on a fixed SERIES_INTERVAL_SEC the operator cannot
+   * move.
+   *
+   * Neither is simply `60 / its own interval`, because nothing upstream is
+   * fetched unless a poll asks for it. The board polls on ONE timer, ticking at
+   * the fastest interval any site is set to, so an endpoint can only be
+   * refetched on a tick — its effective interval is its own rounded UP to the
+   * next whole tick. That used to make no difference, when the knob stopped at
+   * the series' own quarter hour. It does now: on a board ticking hourly the
+   * series are fetched hourly too, and counting them at 900 s would put a
+   * number on screen four times the real spend.
    */
   const cost = useMemo(() => {
+    const tickSec = Math.min(...activeSiteIds.map((id) => effectiveFor(id).powerFlowSec));
+    const perFetch = (intervalSec: number) => tickSec * Math.ceil(intervalSec / tickSec);
+
     let callsPerMin = 0;
     for (const siteId of activeSiteIds) {
       const iv = effectiveFor(siteId);
-      callsPerMin += 60 / iv.powerFlowSec + (4 * 60) / SERIES_INTERVAL_SEC;
+      callsPerMin += 60 / perFetch(iv.powerFlowSec) + (4 * 60) / perFetch(SERIES_INTERVAL_SEC);
     }
 
     const perDay = callsPerMin * 60 * 24 + activeSiteIds.length;

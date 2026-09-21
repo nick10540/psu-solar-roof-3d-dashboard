@@ -40,6 +40,7 @@ import {
   SolarEdgeBackendLimits,
   SiteRefreshIntervals,
   DEFAULT_REFRESH_INTERVALS,
+  REFRESH_DEFAULTS_VERSION,
   clampRefreshIntervalSec,
   MIN_REFRESH_INTERVAL_SEC,
   SERIES_INTERVAL_SEC
@@ -84,10 +85,17 @@ let clientCacheTtlMs = DEFAULT_REFRESH_INTERVALS.powerFlowSec * 1000 * 0.9;
 /**
  * The shortest interval any site is configured for, in seconds.
  *
- * Only the power-flow cadence is a candidate now. The quarter-hour series are
- * pinned server-side at SERIES_INTERVAL_SEC and the browser never has to tick
- * for them: whatever poll lands after their 15 minutes are up picks the new
- * buckets up on its way past.
+ * Only the power-flow cadence is a candidate: the quarter-hour series are
+ * pinned server-side at SERIES_INTERVAL_SEC, so the browser never ticks for
+ * them and whatever poll lands after their 15 minutes are up picks the new
+ * buckets on its way past.
+ *
+ * Which also means this interval is a CEILING on their freshness, not just on
+ * the live kW. Nothing upstream is fetched without a poll to trigger it, so a
+ * board on the 1-hour default sees new quarter-hour buckets once an hour — it
+ * gets the most recent one, three quarters of an hour of them having gone by
+ * unasked-for. That is the cheap end of the trade the knob offers, and it is
+ * why the settings panel prices the series against this number too.
  */
 export function fastestIntervalSec(config: SolarEdgeConfig): number {
   const candidates: number[] = [
@@ -1200,11 +1208,75 @@ export function loadSolarEdgeConfig(): SolarEdgeConfig {
     const raw = localStorage.getItem(STORAGE_KEY_CONFIG);
     if (!raw) return { ...INITIAL_SOLAREDGE_CONFIG };
     const parsed = JSON.parse(raw);
-    return normaliseRefreshConfig({ ...INITIAL_SOLAREDGE_CONFIG, ...parsed });
+
+    // Read the stamp off the STORED object, not the merge: spreading
+    // INITIAL_SOLAREDGE_CONFIG underneath would lend its own current version to
+    // a config that has never been migrated, and the bump below would then skip
+    // exactly the boards it exists for.
+    const storedVersion = Number((parsed as { refreshDefaultsVersion?: unknown })
+      ?.refreshDefaultsVersion) || 0;
+
+    const merged = normaliseRefreshConfig({ ...INITIAL_SOLAREDGE_CONFIG, ...parsed });
+    if (storedVersion >= REFRESH_DEFAULTS_VERSION) return merged;
+
+    const bumped = applyRefreshDefaultBump(merged);
+    // Persist immediately rather than waiting for the operator to open the
+    // settings modal: an unattended kiosk may go weeks without a save, and
+    // until the stamp is written the bump would be recomputed on every reload —
+    // which would also undo a cadence lowered from the panel in between.
+    saveSolarEdgeConfig(bumped);
+    return bumped;
   } catch (err) {
     console.error('Failed to load saved dashboard config, using defaults:', err);
     return { ...INITIAL_SOLAREDGE_CONFIG };
   }
+}
+
+/**
+ * Pull a stored cadence onto the current shipped default, once.
+ *
+ * Runs on load only — never from `normaliseRefreshConfig`, which also runs on
+ * SAVE, where it would snap every value the operator typed straight back to the
+ * default and leave the knob looking broken.
+ *
+ * It only ever SLOWS a board down. A cadence faster than the shipped default is
+ * treated as inherited from an older build and raised to it; one already at or
+ * slower than the default is left exactly as it is, because nobody ends up
+ * below the default by accident — that costs money and is always a choice.
+ *
+ * Per-site overrides faster than the default are DROPPED rather than rewritten,
+ * so those pins go back to following the global knob. An override exists to
+ * make one site fresher than the rest; once the rest have moved, keeping a copy
+ * of the old number pinned to one site is not a setting anyone asked for.
+ */
+function applyRefreshDefaultBump(config: SolarEdgeConfig): SolarEdgeConfig {
+  const target = DEFAULT_REFRESH_INTERVALS.powerFlowSec;
+  const before = config.refreshIntervals.powerFlowSec;
+
+  const siteRefreshIntervals: Record<string, SiteRefreshIntervals> = {};
+  let droppedOverrides = 0;
+  for (const [id, iv] of Object.entries(config.siteRefreshIntervals ?? {})) {
+    if (iv.powerFlowSec < target) {
+      droppedOverrides += 1;
+      continue;
+    }
+    siteRefreshIntervals[id] = iv;
+  }
+
+  if (before < target || droppedOverrides > 0) {
+    console.info(
+      `[solaredge] refresh cadence moved onto the shipped default: ${before}s -> ` +
+        `${Math.max(before, target)}s` +
+        (droppedOverrides > 0 ? `, ${droppedOverrides} per-site override(s) cleared` : '')
+    );
+  }
+
+  return {
+    ...config,
+    refreshIntervals: { powerFlowSec: Math.max(before, target) },
+    siteRefreshIntervals,
+    refreshDefaultsVersion: REFRESH_DEFAULTS_VERSION,
+  };
 }
 
 export function saveSolarEdgeConfig(config: SolarEdgeConfig): void {
